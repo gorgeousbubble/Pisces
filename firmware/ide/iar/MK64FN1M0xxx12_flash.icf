@@ -1,0 +1,36 @@
+/*
+ * IAR EWARM 链接脚本 - MK64FN1M0VLL12
+ * Flash: 1MB @ 0x00000000
+ * RAM:  256KB @ 0x20000000
+ *
+ * 内存分配：
+ *   Flash: 向量表 + 代码 + 只读数据
+ *   RAM:   .data + .bss + FreeRTOS堆(64KB) + 任务栈
+ */
+
+/* 定义内存区域 */
+define memory mem with size = 4G;
+
+define region FLASH_region = mem:[from 0x00000000 to 0x000FFFFF];  /* 1MB Flash */
+define region RAM_region   = mem:[from 0x20000000 to 0x2003FFFF];  /* 256KB RAM */
+
+/* Flash 配置字段（K64 特有，位于 0x400-0x40F，必须保留） */
+define region FLASH_CONFIG_region = mem:[from 0x00000400 to 0x0000040F];
+
+/* 块定义 */
+define block CSTACK    with alignment = 8, size = 0x800  {};  /* 2KB 主栈 */
+define block HEAP      with alignment = 8, size = 0x1000 {};  /* 4KB C堆（FreeRTOS用自己的堆） */
+
+/* 初始化策略 */
+initialize by copy { readwrite };
+do not initialize  { section .noinit };
+
+/* Flash 配置字段：不初始化，保持编程值 */
+do not initialize  { section .FlashConfig };
+
+/* 放置规则 */
+place at address mem:0x00000000 { readonly section .intvec };  /* 向量表必须在 Flash 起始 */
+place in FLASH_CONFIG_region    { section .FlashConfig };       /* Flash 配置字段 */
+place in FLASH_region           { readonly };                   /* 其余只读段 */
+place in RAM_region             { readwrite };                  /* 读写段 */
+place in RAM_region             { block CSTACK, block HEAP };   /* 栈和堆 */

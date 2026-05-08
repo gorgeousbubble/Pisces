@@ -1,48 +1,52 @@
-# Prerequisites
-*.d
+# =============================================================================
+# Pisces — K64 IP Camera
+# .gitignore
+# =============================================================================
 
-# Object files
+# -----------------------------------------------------------------------------
+# C / 嵌入式通用编译产物
+# -----------------------------------------------------------------------------
+*.d
 *.o
 *.ko
 *.obj
 *.elf
-
-# Linker output
-*.ilk
+*.axf          # ARM 可执行格式（Keil/IAR 输出）
+*.out
+*.hex
+*.bin
+*.srec
 *.map
+*.lst
+*.lnp
+*.dep
+*.ilk
 *.exp
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Libraries
 *.lib
 *.a
 *.la
 *.lo
+*.gch
+*.pch
+*.su           # GCC 栈使用分析文件
+*.idb
+*.pdb
+*.dwo
+*.dSYM/
 
-# Shared objects (inc. Windows DLLs)
+# 共享库
 *.dll
 *.so
 *.so.*
 *.dylib
 
-# Executables
+# 可执行文件
 *.exe
-*.out
 *.app
 *.i*86
 *.x86_64
-*.hex
 
-# Debug files
-*.dSYM/
-*.su
-*.idb
-*.pdb
-
-# Kernel Module Compile Results
+# Kernel Module
 *.mod*
 *.cmd
 .tmp_versions/
@@ -51,5 +55,130 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
-# debug information files
-*.dwo
+# -----------------------------------------------------------------------------
+# Keil MDK 5 构建产物
+# -----------------------------------------------------------------------------
+firmware/ide/keil/build/          # 编译输出目录
+firmware/ide/keil/*.uvoptx        # 用户个人选项（调试器配置等，不共享）
+firmware/ide/keil/*.uvguix        # GUI 布局文件
+firmware/ide/keil/*.scvd          # System Component View Description
+firmware/ide/keil/JLinkLog.txt
+firmware/ide/keil/JLink*.log
+firmware/ide/keil/*.bak
+firmware/ide/keil/RTE/            # Run-Time Environment 自动生成目录
+firmware/ide/keil/EventRecorderStub.scvd
+
+# -----------------------------------------------------------------------------
+# IAR EWARM 构建产物
+# -----------------------------------------------------------------------------
+firmware/ide/iar/build/           # 编译输出目录（Debug/Release）
+firmware/ide/iar/Debug/
+firmware/ide/iar/Release/
+firmware/ide/iar/*.ewt            # 工具链设置（本地）
+firmware/ide/iar/*.dni            # 调试器配置（本地）
+firmware/ide/iar/*.wsdt           # 工作区桌面布局
+firmware/ide/iar/*.crun           # C-RUN 配置
+firmware/ide/iar/settings/        # 本地 IDE 设置目录
+firmware/ide/iar/*.dep
+
+# -----------------------------------------------------------------------------
+# 第三方库（需手动下载，不纳入版本控制）
+# -----------------------------------------------------------------------------
+firmware/third_party/FreeRTOS/
+firmware/third_party/KSDK/
+# FatFs 的 diskio.c 是我们自己写的，保留；其余 FatFs 源码不纳入
+# ffconf.h 是我们自己编写的配置文件，必须保留在版本库中
+# 只排除 FatFs 的官方源码文件（需用户手动下载）
+firmware/third_party/FatFs/source/ff.c
+firmware/third_party/FatFs/source/ff.h
+firmware/third_party/FatFs/source/ffunicode.c
+firmware/third_party/FatFs/source/diskio.h
+firmware/third_party/FatFs/source/integer.h
+# 注意：以下文件是项目自有实现，不排除：
+#   firmware/third_party/FatFs/source/ffconf.h  ← 项目配置，保留
+#   firmware/third_party/FatFs/source/diskio.c  ← SDHC 适配，保留
+#   firmware/third_party/FatFs/source/ffsystem.c ← FreeRTOS 互斥锁，保留
+
+# -----------------------------------------------------------------------------
+# Python 服务器端
+# -----------------------------------------------------------------------------
+server/__pycache__/
+server/**/__pycache__/
+server/*.pyc
+server/*.pyo
+server/*.pyd
+server/.venv/
+server/venv/
+server/env/
+server/.env              # 环境变量文件（含密码，绝对不提交）
+server/.env.*
+server/*.egg-info/
+server/dist/
+server/build/
+server/.pytest_cache/
+server/.mypy_cache/
+server/.ruff_cache/
+server/htmlcov/
+server/.coverage
+server/coverage.xml
+server/*.log
+
+# SQLite 数据库（运行时生成）
+server/*.db
+server/**/*.db
+*.db-shm
+*.db-wal
+
+# -----------------------------------------------------------------------------
+# 系统 / 编辑器文件
+# -----------------------------------------------------------------------------
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# VS Code（保留 .vscode/settings.json 和 extensions.json，忽略本地状态）
+.vscode/launch.json
+.vscode/*.code-workspace
+.vscode/ipch/
+
+# JetBrains / CLion
+.idea/
+*.iml
+cmake-build-*/
+
+# Vim / Emacs
+*.swp
+*.swo
+*~
+\#*\#
+.#*
+
+# -----------------------------------------------------------------------------
+# 日志与临时文件
+# -----------------------------------------------------------------------------
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej

@@ -1,0 +1,414 @@
+; Pisces IP Camera — KiCad 网表文件
+; 格式：KiCad Netlist Format (OrCAD/PADS 兼容)
+; 生成时间：2026-05-08
+; 版本：v1.0
+;
+; 导入方法（KiCad 6/7）：
+;   1. 打开 KiCad PCB Editor
+;   2. Tools → Update PCB from Schematic
+;   3. 或直接导入此网表：File → Import Netlist
+;
+; 网络命名规则：
+;   VDD_3V3  = 3.3V 电源
+;   VDD_1V8  = 1.8V 电源（OV2640 DVDD）
+;   VDD_2V8  = 2.8V 电源（OV2640 AVDD/DOVDD）
+;   GND      = 数字地
+;   AGND     = 模拟地（与 GND 在 PCB 上单点连接）
+
+(export (version "E")
+  (design
+    (source "pisces_ipcam.kicad_sch")
+    (date "2026-05-08")
+    (tool "KiCad 7.0")
+    (sheet (number "1") (name "/") (tstamps "/"))
+  )
+
+  ; =========================================================================
+  ; 元器件列表
+  ; =========================================================================
+  (components
+
+    ; --- U1: NXP MK64FN1M0VLL12 ---
+    (comp (ref "U1")
+      (value "MK64FN1M0VLL12")
+      (footprint "Package_QFP:LQFP-100_14x14mm_P0.5mm")
+      (description "NXP Kinetis K64 MCU, ARM Cortex-M4, 120MHz, 1MB Flash, 256KB RAM")
+      (fields
+        (field (name "Manufacturer") "NXP Semiconductors")
+        (field (name "MPN") "MK64FN1M0VLL12")
+        (field (name "Datasheet") "https://www.nxp.com/docs/en/data-sheet/K64P144M120SF5.pdf")
+      )
+    )
+
+    ; --- U2: ESP8266-01S WiFi Module ---
+    (comp (ref "U2")
+      (value "ESP8266-01S")
+      (footprint "RF_Module:ESP-01S")
+      (description "ESP8266 WiFi Module, UART AT command, 802.11 b/g/n")
+      (fields
+        (field (name "Manufacturer") "Espressif Systems")
+        (field (name "MPN") "ESP8266-01S")
+      )
+    )
+
+    ; --- U3: OV2640 Camera Module ---
+    (comp (ref "U3")
+      (value "OV2640-Module")
+      (footprint "Connector_FFC-FPC:Hirose_FH12-24S-0.5SH_1x24-1MP_P0.5mm_Horizontal")
+      (description "OV2640 2MP Camera Module, DVP interface, onboard JPEG encoder")
+      (fields
+        (field (name "Manufacturer") "OmniVision")
+        (field (name "MPN") "OV2640")
+      )
+    )
+
+    ; --- U4: DS3231 RTC ---
+    (comp (ref "U4")
+      (value "DS3231SN")
+      (footprint "Package_SO:SOIC-16_3.9x9.9mm_P1.27mm")
+      (description "Extremely Accurate I2C RTC, ±2ppm, VBAT backup")
+      (fields
+        (field (name "Manufacturer") "Maxim Integrated")
+        (field (name "MPN") "DS3231SN#")
+        (field (name "Datasheet") "https://datasheets.maximintegrated.com/en/ds/DS3231.pdf")
+      )
+    )
+
+    ; --- U5: AMS1117-3.3 LDO ---
+    (comp (ref "U5")
+      (value "AMS1117-3.3")
+      (footprint "Package_TO_SOT_SMD:SOT-223-3_TabPin2")
+      (description "1A Low Dropout Regulator, 5V to 3.3V")
+      (fields
+        (field (name "Manufacturer") "Advanced Monolithic Systems")
+        (field (name "MPN") "AMS1117-3.3")
+      )
+    )
+
+    ; --- U6: AMS1117-1.8 LDO ---
+    (comp (ref "U6")
+      (value "AMS1117-1.8")
+      (footprint "Package_TO_SOT_SMD:SOT-223-3_TabPin2")
+      (description "1A Low Dropout Regulator, 3.3V to 1.8V")
+      (fields
+        (field (name "Manufacturer") "Advanced Monolithic Systems")
+        (field (name "MPN") "AMS1117-1.8")
+      )
+    )
+
+    ; --- J1: MicroSD Card Slot ---
+    (comp (ref "J1")
+      (value "MicroSD_Push-Push")
+      (footprint "Connector_Card:microSD_HC_Hirose_DM3AT-SF-PEJM5")
+      (description "MicroSD Card Slot, Push-Push, with Card Detect")
+    )
+
+    ; --- J2: Camera FPC Connector ---
+    (comp (ref "J2")
+      (value "FPC-24P-0.5mm")
+      (footprint "Connector_FFC-FPC:Hirose_FH12-24S-0.5SH_1x24-1MP_P0.5mm_Horizontal")
+      (description "24-pin 0.5mm FPC Connector for OV2640 module")
+    )
+
+    ; --- J3: SWD Debug Connector ---
+    (comp (ref "J3")
+      (value "SWD_10pin")
+      (footprint "Connector_PinHeader_2.54mm:PinHeader_2x05_P2.54mm_Vertical")
+      (description "ARM Cortex-M 10-pin SWD Debug Connector")
+    )
+
+    ; --- J4: UART Log Connector ---
+    (comp (ref "J4")
+      (value "UART_LOG_3pin")
+      (footprint "Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical")
+      (description "UART0 Serial Log, 115200 8N1")
+    )
+
+    ; --- J5: Power Input ---
+    (comp (ref "J5")
+      (value "USB_Micro_B")
+      (footprint "Connector_USB:USB_Micro-B_Molex-105017-0001")
+      (description "Micro-USB Power Input, 5V")
+    )
+
+    ; --- BT1: CR2032 Battery Holder ---
+    (comp (ref "BT1")
+      (value "CR2032")
+      (footprint "Battery:BatteryHolder_Keystone_3034_1x20mm")
+      (description "CR2032 Coin Cell Battery Holder for DS3231 VBAT")
+    )
+
+    ; --- Y1: 12MHz Crystal ---
+    (comp (ref "Y1")
+      (value "12MHz")
+      (footprint "Crystal:Crystal_SMD_3225-4Pin_3.2x2.5mm")
+      (description "12MHz Crystal Oscillator, ±20ppm, CL=18pF")
+      (fields
+        (field (name "Manufacturer") "Abracon")
+        (field (name "MPN") "ABM8-12.000MHZ-B2-T")
+      )
+    )
+
+    ; --- Y2: 32.768kHz Crystal ---
+    (comp (ref "Y2")
+      (value "32.768kHz")
+      (footprint "Crystal:Crystal_SMD_3215-2Pin_3.2x1.5mm")
+      (description "32.768kHz RTC Crystal, CL=7pF (optional if DS3231 used)")
+    )
+
+    ; --- LED1: Green Status LED ---
+    (comp (ref "LED1")
+      (value "LED_Green")
+      (footprint "LED_SMD:LED_0805_2012Metric")
+      (description "Green Status LED, Vf=2.0V, If=10mA")
+    )
+
+    ; --- LED2: Red Error LED ---
+    (comp (ref "LED2")
+      (value "LED_Red")
+      (footprint "LED_SMD:LED_0805_2012Metric")
+      (description "Red Error LED, Vf=1.8V, If=10mA")
+    )
+
+    ; --- SW1: Reset Button ---
+    (comp (ref "SW1")
+      (value "SW_RESET")
+      (footprint "Button_Switch_THT:SW_PUSH_6mm")
+      (description "6x6mm Tactile Push Button, Reset")
+    )
+
+    ; --- Resistors ---
+    (comp (ref "R1") (value "4.7k") (footprint "Resistor_SMD:R_0402_1005Metric") (description "I2C0 SCL Pull-up"))
+    (comp (ref "R2") (value "4.7k") (footprint "Resistor_SMD:R_0402_1005Metric") (description "I2C0 SDA Pull-up"))
+    (comp (ref "R3") (value "4.7k") (footprint "Resistor_SMD:R_0402_1005Metric") (description "I2C1 SCL Pull-up"))
+    (comp (ref "R4") (value "4.7k") (footprint "Resistor_SMD:R_0402_1005Metric") (description "I2C1 SDA Pull-up"))
+    (comp (ref "R5") (value "330")  (footprint "Resistor_SMD:R_0402_1005Metric") (description "LED1 Current Limit"))
+    (comp (ref "R6") (value "330")  (footprint "Resistor_SMD:R_0402_1005Metric") (description "LED2 Current Limit"))
+    (comp (ref "R7") (value "10k")  (footprint "Resistor_SMD:R_0402_1005Metric") (description "ESP8266 RST Pull-up"))
+    (comp (ref "R8") (value "10k")  (footprint "Resistor_SMD:R_0402_1005Metric") (description "ESP8266 EN Pull-up"))
+    (comp (ref "R9") (value "10k")  (footprint "Resistor_SMD:R_0402_1005Metric") (description "MCU RESET Pull-up"))
+
+    ; --- Capacitors ---
+    (comp (ref "C1")  (value "100n/50V") (footprint "Capacitor_SMD:C_0402_1005Metric") (description "MCU VDD Decoupling"))
+    (comp (ref "C2")  (value "100n/50V") (footprint "Capacitor_SMD:C_0402_1005Metric") (description "MCU VDD Decoupling"))
+    (comp (ref "C3")  (value "100n/50V") (footprint "Capacitor_SMD:C_0402_1005Metric") (description "MCU VDDA Decoupling"))
+    (comp (ref "C4")  (value "100n/50V") (footprint "Capacitor_SMD:C_0402_1005Metric") (description "ESP8266 VCC Decoupling"))
+    (comp (ref "C5")  (value "100n/50V") (footprint "Capacitor_SMD:C_0402_1005Metric") (description "SD Card VDD Decoupling"))
+    (comp (ref "C6")  (value "100n/50V") (footprint "Capacitor_SMD:C_0402_1005Metric") (description "OV2640 AVDD Decoupling"))
+    (comp (ref "C7")  (value "100n/50V") (footprint "Capacitor_SMD:C_0402_1005Metric") (description "OV2640 DVDD Decoupling"))
+    (comp (ref "C8")  (value "100n/50V") (footprint "Capacitor_SMD:C_0402_1005Metric") (description "DS3231 VCC Decoupling"))
+    (comp (ref "C9")  (value "10u/10V")  (footprint "Capacitor_SMD:C_0805_2012Metric") (description "U5 Output Filter"))
+    (comp (ref "C10") (value "10u/10V")  (footprint "Capacitor_SMD:C_0805_2012Metric") (description "U6 Output Filter"))
+    (comp (ref "C11") (value "18p/50V")  (footprint "Capacitor_SMD:C_0402_1005Metric") (description "Y1 Load Cap"))
+    (comp (ref "C12") (value "18p/50V")  (footprint "Capacitor_SMD:C_0402_1005Metric") (description "Y1 Load Cap"))
+    (comp (ref "C13") (value "100n/10V") (footprint "Capacitor_SMD:C_0402_1005Metric") (description "MCU VBAT Decoupling"))
+    (comp (ref "C14") (value "100n/10V") (footprint "Capacitor_SMD:C_0402_1005Metric") (description "DS3231 VBAT Decoupling"))
+    (comp (ref "C15") (value "100u/10V") (footprint "Capacitor_THT:CP_Radial_D6.3mm_P2.50mm") (description "ESP8266 Bulk Decoupling"))
+  )
+
+  ; =========================================================================
+  ; 网络连接
+  ; =========================================================================
+  (nets
+
+    ; --- 电源网络 ---
+    (net (code "1")  (name "VDD_3V3")
+      (node (ref "U5")  (pin "OUT"))
+      (node (ref "U1")  (pin "VDD"))
+      (node (ref "U2")  (pin "VCC"))
+      (node (ref "U4")  (pin "VCC"))
+      (node (ref "J1")  (pin "VDD"))
+      (node (ref "C1")  (pin "1")) (node (ref "C2")  (pin "1"))
+      (node (ref "C3")  (pin "1")) (node (ref "C4")  (pin "1"))
+      (node (ref "C5")  (pin "1")) (node (ref "C8")  (pin "1"))
+      (node (ref "C9")  (pin "1")) (node (ref "C13") (pin "1"))
+      (node (ref "R1")  (pin "1")) (node (ref "R2")  (pin "1"))
+      (node (ref "R3")  (pin "1")) (node (ref "R4")  (pin "1"))
+      (node (ref "R7")  (pin "1")) (node (ref "R8")  (pin "1"))
+      (node (ref "R9")  (pin "1"))
+      (node (ref "J3")  (pin "1"))
+      (node (ref "U6")  (pin "IN"))
+    )
+
+    (net (code "2")  (name "VDD_1V8")
+      (node (ref "U6")  (pin "OUT"))
+      (node (ref "U3")  (pin "DVDD"))
+      (node (ref "C7")  (pin "1"))
+      (node (ref "C10") (pin "1"))
+    )
+
+    (net (code "3")  (name "VDD_2V8")
+      (node (ref "U3")  (pin "AVDD"))
+      (node (ref "U3")  (pin "DOVDD"))
+      (node (ref "C6")  (pin "1"))
+    )
+
+    (net (code "4")  (name "GND")
+      (node (ref "U1")  (pin "VSS"))
+      (node (ref "U2")  (pin "GND"))
+      (node (ref "U3")  (pin "GND"))
+      (node (ref "U4")  (pin "GND"))
+      (node (ref "U5")  (pin "GND"))
+      (node (ref "U6")  (pin "GND"))
+      (node (ref "J1")  (pin "VSS"))
+      (node (ref "J3")  (pin "3"))
+      (node (ref "J4")  (pin "1"))
+      (node (ref "C1")  (pin "2")) (node (ref "C2")  (pin "2"))
+      (node (ref "C3")  (pin "2")) (node (ref "C4")  (pin "2"))
+      (node (ref "C5")  (pin "2")) (node (ref "C6")  (pin "2"))
+      (node (ref "C7")  (pin "2")) (node (ref "C8")  (pin "2"))
+      (node (ref "C9")  (pin "2")) (node (ref "C10") (pin "2"))
+      (node (ref "C11") (pin "2")) (node (ref "C12") (pin "2"))
+      (node (ref "C13") (pin "2")) (node (ref "C14") (pin "2"))
+      (node (ref "C15") (pin "2"))
+      (node (ref "LED1") (pin "K"))
+      (node (ref "LED2") (pin "K"))
+      (node (ref "SW1")  (pin "2"))
+    )
+
+    (net (code "5")  (name "VBAT_RTC")
+      (node (ref "BT1") (pin "+"))
+      (node (ref "U4")  (pin "VBAT"))
+      (node (ref "C14") (pin "1"))
+    )
+
+    ; --- MCU 时钟 ---
+    (net (code "10") (name "EXTAL0")
+      (node (ref "U1")  (pin "EXTAL0"))
+      (node (ref "Y1")  (pin "1"))
+      (node (ref "C11") (pin "1"))
+    )
+    (net (code "11") (name "XTAL0")
+      (node (ref "U1")  (pin "XTAL0"))
+      (node (ref "Y1")  (pin "2"))
+      (node (ref "C12") (pin "1"))
+    )
+
+    ; --- MCU 复位 ---
+    (net (code "12") (name "RESET_b")
+      (node (ref "U1")  (pin "RESET_b"))
+      (node (ref "R9")  (pin "2"))
+      (node (ref "SW1") (pin "1"))
+      (node (ref "J3")  (pin "10"))
+    )
+
+    ; --- SWD 调试 ---
+    (net (code "13") (name "SWD_CLK")
+      (node (ref "U1") (pin "PTA0"))
+      (node (ref "J3") (pin "4"))
+    )
+    (net (code "14") (name "SWD_DIO")
+      (node (ref "U1") (pin "PTA3"))
+      (node (ref "J3") (pin "2"))
+    )
+    (net (code "15") (name "SWO")
+      (node (ref "U1") (pin "PTA2"))
+      (node (ref "J3") (pin "6"))
+    )
+
+    ; --- UART0 日志 ---
+    (net (code "20") (name "UART0_TX")
+      (node (ref "U1") (pin "PTA14"))
+      (node (ref "J4") (pin "2"))
+    )
+    (net (code "21") (name "UART0_RX")
+      (node (ref "U1") (pin "PTA15"))
+      (node (ref "J4") (pin "3"))
+    )
+
+    ; --- WiFi ESP8266 ---
+    (net (code "30") (name "WIFI_UART_TX")
+      (node (ref "U1") (pin "PTE24"))
+      (node (ref "U2") (pin "RXD"))
+    )
+    (net (code "31") (name "WIFI_UART_RX")
+      (node (ref "U1") (pin "PTE25"))
+      (node (ref "U2") (pin "TXD"))
+    )
+    (net (code "32") (name "WIFI_RST")
+      (node (ref "U1") (pin "PTA13"))
+      (node (ref "U2") (pin "RST"))
+      (node (ref "R7") (pin "2"))
+    )
+    (net (code "33") (name "WIFI_EN")
+      (node (ref "U1") (pin "PTA12"))
+      (node (ref "U2") (pin "CH_PD"))
+      (node (ref "R8") (pin "2"))
+    )
+
+    ; --- OV2640 摄像头 ---
+    (net (code "40") (name "CAM_XCLK")
+      (node (ref "U1") (pin "PTC4"))
+      (node (ref "J2") (pin "XCLK"))
+    )
+    (net (code "41") (name "CAM_PCLK")
+      (node (ref "U1") (pin "PTC3"))
+      (node (ref "J2") (pin "PCLK"))
+    )
+    (net (code "42") (name "CAM_VSYNC")
+      (node (ref "U1") (pin "PTC2"))
+      (node (ref "J2") (pin "VSYNC"))
+    )
+    (net (code "43") (name "CAM_HREF")
+      (node (ref "U1") (pin "PTC1"))
+      (node (ref "J2") (pin "HREF"))
+    )
+    (net (code "44") (name "CAM_SCCB_SCL")
+      (node (ref "U1") (pin "PTB0"))
+      (node (ref "J2") (pin "SIO_C"))
+      (node (ref "R1") (pin "2"))
+    )
+    (net (code "45") (name "CAM_SCCB_SDA")
+      (node (ref "U1") (pin "PTB1"))
+      (node (ref "J2") (pin "SIO_D"))
+      (node (ref "R2") (pin "2"))
+    )
+    (net (code "46") (name "CAM_D0") (node (ref "U1") (pin "PTD0")) (node (ref "J2") (pin "D2")))
+    (net (code "47") (name "CAM_D1") (node (ref "U1") (pin "PTD1")) (node (ref "J2") (pin "D3")))
+    (net (code "48") (name "CAM_D2") (node (ref "U1") (pin "PTD2")) (node (ref "J2") (pin "D4")))
+    (net (code "49") (name "CAM_D3") (node (ref "U1") (pin "PTD3")) (node (ref "J2") (pin "D5")))
+    (net (code "50") (name "CAM_D4") (node (ref "U1") (pin "PTD4")) (node (ref "J2") (pin "D6")))
+    (net (code "51") (name "CAM_D5") (node (ref "U1") (pin "PTD5")) (node (ref "J2") (pin "D7")))
+    (net (code "52") (name "CAM_D6") (node (ref "U1") (pin "PTD6")) (node (ref "J2") (pin "D8")))
+    (net (code "53") (name "CAM_D7") (node (ref "U1") (pin "PTD7")) (node (ref "J2") (pin "D9")))
+
+    ; --- SD 卡 SDHC ---
+    (net (code "60") (name "SD_CLK")  (node (ref "U1") (pin "PTE2"))  (node (ref "J1") (pin "CLK")))
+    (net (code "61") (name "SD_CMD")  (node (ref "U1") (pin "PTE3"))  (node (ref "J1") (pin "CMD")))
+    (net (code "62") (name "SD_DAT0") (node (ref "U1") (pin "PTE1"))  (node (ref "J1") (pin "DAT0")))
+    (net (code "63") (name "SD_DAT1") (node (ref "U1") (pin "PTE0"))  (node (ref "J1") (pin "DAT1")))
+    (net (code "64") (name "SD_DAT2") (node (ref "U1") (pin "PTD13")) (node (ref "J1") (pin "DAT2")))
+    (net (code "65") (name "SD_DAT3") (node (ref "U1") (pin "PTD12")) (node (ref "J1") (pin "DAT3")))
+    (net (code "66") (name "SD_CD")   (node (ref "U1") (pin "PTE6"))  (node (ref "J1") (pin "CD")))
+
+    ; --- DS3231 RTC ---
+    (net (code "70") (name "RTC_I2C_SCL")
+      (node (ref "U1") (pin "PTC10"))
+      (node (ref "U4") (pin "SCL"))
+      (node (ref "R3") (pin "2"))
+    )
+    (net (code "71") (name "RTC_I2C_SDA")
+      (node (ref "U1") (pin "PTC11"))
+      (node (ref "U4") (pin "SDA"))
+      (node (ref "R4") (pin "2"))
+    )
+
+    ; --- LED ---
+    (net (code "80") (name "LED_STATUS")
+      (node (ref "U1")  (pin "PTB22"))
+      (node (ref "R5")  (pin "1"))
+    )
+    (net (code "81") (name "LED_STATUS_K")
+      (node (ref "R5")   (pin "2"))
+      (node (ref "LED1") (pin "A"))
+    )
+    (net (code "82") (name "LED_ERROR")
+      (node (ref "U1")  (pin "PTE26"))
+      (node (ref "R6")  (pin "1"))
+    )
+    (net (code "83") (name "LED_ERROR_K")
+      (node (ref "R6")   (pin "2"))
+      (node (ref "LED2") (pin "A"))
+    )
+  )
+)
