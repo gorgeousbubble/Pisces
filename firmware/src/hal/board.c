@@ -30,20 +30,17 @@ static const mcg_config_t s_mcgConfig = {
 };
 
 static const sim_clock_config_t s_simConfig = {
-    .pllFllSel    = 1U,        /* PLLFLLSEL: PLL */
-    .pllFllDiv    = 0U,
-    .pllFllFrac   = 0U,
-    .er32kSrc     = 3U,        /* ERCLK32K: LPO */
-    .clkdiv1      = 0x01140000U, /* OUTDIV1=/1, OUTDIV2=/2, OUTDIV4=/5 */
+    .pllFllSel = 1U,           /* PLLFLLSEL: PLL */
+    .er32kSrc  = 3U,           /* ERCLK32K: LPO */
+    .clkdiv1   = 0x01140000U,  /* OUTDIV1=/1, OUTDIV2=/2, OUTDIV4=/5 */
 };
 
 static const osc_config_t s_oscConfig = {
-    .freq         = 12000000U,
-    .capLoad      = 0U,
-    .workMode     = kOSC_ModeOscLowPower,
-    .oscerConfig  = {
+    .freq      = 12000000U,
+    .capLoad   = 0U,
+    .workMode  = kOSC_ModeOscLowPower,
+    .oscerConfig = {
         .enableMode = kOSC_ErClkEnable,
-        .erclkDiv   = 0U,
     },
 };
 
