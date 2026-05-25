@@ -20,17 +20,18 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* 包含 KSDK RTC 驱动头文件，复用其 rtc_datetime_t 定义，避免重复定义冲突 */
+#include "fsl_rtc.h"
+
 /* -----------------------------------------------------------------------
  * 时间结构体
+ *
+ * rtc_datetime_t 直接使用 fsl_rtc.h 中的定义（KSDK 2.x）：
+ *   typedef struct { uint16_t year; uint8_t month; uint8_t day;
+ *                    uint8_t hour;  uint8_t minute; uint8_t second; }
+ *                    rtc_datetime_t;
+ * 两者字段完全一致，无需重复定义。
  * ----------------------------------------------------------------------- */
-typedef struct {
-    uint16_t year;    /**< 完整年份，如 2026 */
-    uint8_t  month;   /**< 1–12 */
-    uint8_t  day;     /**< 1–31 */
-    uint8_t  hour;    /**< 0–23 */
-    uint8_t  minute;  /**< 0–59 */
-    uint8_t  second;  /**< 0–59 */
-} rtc_datetime_t;
 
 /* -----------------------------------------------------------------------
  * RTC 源枚举

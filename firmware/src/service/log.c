@@ -8,6 +8,7 @@
 
 #include "log.h"
 #include "board.h"
+#include "ipcam_config.h"
 #include "fsl_uart.h"
 #include "fsl_clock.h"
 #include "FreeRTOS.h"
