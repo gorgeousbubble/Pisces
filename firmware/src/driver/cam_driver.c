@@ -367,8 +367,9 @@ ipcam_status_t cam_init(const cam_config_t *cfg)
     /* 配置 DVP 数据引脚（PTD0-PTD7）为 GPIO 输入 */
     for (uint32_t i = 0U; i < 8U; i++) {
         PORT_SetPinMux(CAM_DATA_PORT, i, kPORT_MuxAsGpio);
+        gpio_pin_config_t data_in = {kGPIO_DigitalInput, 0U};
+        GPIO_PinInit(CAM_DATA_GPIO, i, &data_in);
     }
-    GPIO_PortInputEnable(CAM_DATA_GPIO, CAM_DATA_MASK);
 
     /* 配置控制信号引脚为 GPIO 输入 */
     PORT_SetPinMux(CAM_PCLK_PORT,  CAM_PCLK_PIN,  kPORT_MuxAsGpio);

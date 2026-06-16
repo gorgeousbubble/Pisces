@@ -106,9 +106,10 @@ void BOARD_InitPins(void)
     /* --- 摄像头 DVP 数据总线 PTD0-PTD7 --- */
     for (uint32_t i = 0U; i < 8U; i++) {
         PORT_SetPinMux(CAM_DATA_PORT, i, kPORT_MuxAsGpio);
+        /* 配置为输入 */
+        gpio_pin_config_t in_cfg = {kGPIO_DigitalInput, 0U};
+        GPIO_PinInit(CAM_DATA_GPIO, i, &in_cfg);
     }
-    /* 配置为输入 */
-    GPIO_PortInputEnable(CAM_DATA_GPIO, CAM_DATA_MASK);
 
     /* --- 摄像头控制信号 --- */
     PORT_SetPinMux(CAM_PCLK_PORT,  CAM_PCLK_PIN,  kPORT_MuxAsGpio);

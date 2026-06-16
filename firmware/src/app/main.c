@@ -24,6 +24,7 @@
 #include "rtc_driver.h"
 #include "ipcam_config.h"
 #include "ipcam_types.h"
+#include "fsl_gpio.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
@@ -257,8 +258,6 @@ static void task_cmd_handler(void *param)
         switch (cmd.type) {
         case CMD_SNAPSHOT: {
             /* 切换到高分辨率 */
-            uint16_t w = (cmd.width  >= 1280U) ? cmd.width  : 1280U;
-            uint16_t h = (cmd.height >= 720U)  ? cmd.height : 720U;
             uint8_t  q = (cmd.quality >= 80U)  ? cmd.quality : 80U;
 
             cam_set_resolution(CAM_RES_HD720P);

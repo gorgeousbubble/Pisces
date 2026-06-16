@@ -14,9 +14,9 @@
 #include "net_auth.h"
 #include "ipcam_config.h"
 #include "fsl_wdog.h"
+#include "fsl_gpio.h"
 #include "FreeRTOS.h"
 #include "task.h"
-#include "atomic.h"   /* FreeRTOS atomic ops */
 #include <string.h>
 
 #define TAG "SYS"
@@ -212,8 +212,10 @@ reset_reason_t sys_get_last_reset_reason(void)
  * ----------------------------------------------------------------------- */
 void sys_drop_counter_inc(void)
 {
-    /* 使用 FreeRTOS 原子加（Cortex-M4 LDREX/STREX） */
-    Atomic_Increment_u32((uint32_t *)&s_drop_counter);
+    /* Cortex-M4 单核：禁中断保证原子性 */
+    taskENTER_CRITICAL();
+    s_drop_counter++;
+    taskEXIT_CRITICAL();
 }
 
 uint32_t sys_drop_counter_get(void)

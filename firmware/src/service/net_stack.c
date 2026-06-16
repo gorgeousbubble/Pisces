@@ -57,7 +57,6 @@ static volatile uart_ring_buf_t s_rx_buf;
  * 命令接收缓冲区（存储服务器下发的 JSON 命令）
  * ----------------------------------------------------------------------- */
 static char     s_cmd_buf[IPCAM_CMD_BUF_SIZE];
-static uint32_t s_cmd_buf_len = 0U;
 static bool     s_cmd_pending = false;
 
 /* -----------------------------------------------------------------------
@@ -186,7 +185,6 @@ static bool at_wait_response(const char *expected,
             if (line[0] == '{' && line_pos > 2U) {
                 strncpy(s_cmd_buf, line, IPCAM_CMD_BUF_SIZE - 1U);
                 s_cmd_buf[IPCAM_CMD_BUF_SIZE - 1U] = '\0';
-                s_cmd_buf_len = (uint32_t)strlen(s_cmd_buf);
                 s_cmd_pending = true;
                 LOG_D(TAG, "Command received: %s", s_cmd_buf);
             }
@@ -695,7 +693,6 @@ ipcam_status_t net_recv_cmd(ipcam_cmd_t *cmd)
     }
 
     s_cmd_pending = false;
-    s_cmd_buf_len = 0U;
 
     if (cmd->type != CMD_NONE) {
         LOG_I(TAG, "Command parsed: type=%d", (int)cmd->type);
