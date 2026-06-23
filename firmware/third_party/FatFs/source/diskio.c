@@ -49,9 +49,14 @@ typedef struct {
 
 static sd_state_t s_sd;
 
-/* ADMA2 描述符表，4 字节对齐 */
+/* ADMA2 描述符表，4 字节对齐（IAR 兼容写法） */
+#if defined(__ICCARM__)
+#pragma data_alignment = 4
+static sdhc_adma2_descriptor_t s_adma2_table[ADMA2_TABLE_WORDS];
+#else
 static sdhc_adma2_descriptor_t s_adma2_table[ADMA2_TABLE_WORDS]
     __attribute__((aligned(4)));
+#endif
 
 /* -----------------------------------------------------------------------
  * 私有：发送 SD 命令

@@ -123,7 +123,7 @@ void sys_manager_task(void *param)
         }
 
         /* --- 写入速率告警检查（需求 3.8）--- */
-        if (fm_get_slow_write_secs() >= 5U) {
+        if (fm_get_slow_write_secs() >= WRITE_RATE_SLOW_THRESHOLD_SECS) {
             LOG_W(TAG, "SD write performance degraded for %lu seconds",
                   (unsigned long)fm_get_slow_write_secs());
             /* 即时上报（不等定时周期） */

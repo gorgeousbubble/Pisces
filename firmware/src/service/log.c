@@ -135,8 +135,8 @@ void log_write(log_level_t level, const char *tag, const char *fmt, ...)
         total += 2U;
     }
 
-    /* 判断是否在 ISR 中 */
-    if (xPortIsInsideInterrupt()) {
+    /* 判断是否在 ISR 中（使用 CMSIS 标准寄存器，比 xPortIsInsideInterrupt 更可靠） */
+    if (__get_IPSR() != 0U) {
         /* ISR 中直接阻塞发送，不使用缓冲区 */
         log_uart_send_blocking((const uint8_t *)line, total);
         return;

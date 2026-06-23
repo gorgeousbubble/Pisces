@@ -339,10 +339,8 @@ void cam_capture_task_body(void)
     s_read_buf_idx  = s_write_buf_idx;
     s_write_buf_idx ^= 1U;
 
-    /* 通知等待者 */
-    BaseType_t higher_woken = pdFALSE;
-    xSemaphoreGiveFromISR(s_frame_ready_sem, &higher_woken);
-    portYIELD_FROM_ISR(higher_woken);
+    /* 通知等待者（任务上下文，使用普通版本） */
+    xSemaphoreGive(s_frame_ready_sem);
 }
 
 /* -----------------------------------------------------------------------
@@ -377,9 +375,9 @@ ipcam_status_t cam_init(const cam_config_t *cfg)
     PORT_SetPinMux(CAM_HREF_PORT,  CAM_HREF_PIN,  kPORT_MuxAsGpio);
     {
         gpio_pin_config_t in_cfg = {kGPIO_DigitalInput, 0U};
-        GPIO_PinInit(CAM_DATA_GPIO, CAM_PCLK_PIN,  &in_cfg);
-        GPIO_PinInit(CAM_DATA_GPIO, CAM_VSYNC_PIN, &in_cfg);
-        GPIO_PinInit(CAM_DATA_GPIO, CAM_HREF_PIN,  &in_cfg);
+        GPIO_PinInit(PTC, CAM_PCLK_PIN,  &in_cfg);   /* PTC3 */
+        GPIO_PinInit(PTC, CAM_VSYNC_PIN, &in_cfg);   /* PTC2 */
+        GPIO_PinInit(PTC, CAM_HREF_PIN,  &in_cfg);   /* PTC1 */
     }
 
     /* 启动 XCLK（24MHz），等待 OV2640 上电稳定 */

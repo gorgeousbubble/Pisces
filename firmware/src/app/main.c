@@ -148,6 +148,9 @@ static void task_net_send(void *param)
     (void)param;
     LOG_I(TAG, "task_net_send started");
 
+    /* 调度器已启动，此处触发首次 WiFi + TCP 连接 */
+    net_connect();
+
     /* 等待网络连接建立 */
     while (!net_is_streaming()) {
         vTaskDelay(pdMS_TO_TICKS(500U));
@@ -389,7 +392,7 @@ int main(void)
         for (;;) { __asm("NOP"); }
     }
 
-    /* 9. 创建 FreeRTOS 任务 */
+    /* 10. 创建 FreeRTOS 任务 */
     BaseType_t task_ret;
 
     task_ret = xTaskCreate(sys_watchdog_task, "WDG",
@@ -416,12 +419,12 @@ int main(void)
                            STACK_SYS_MANAGER, NULL, PRIO_SYS_MANAGER, NULL);
     configASSERT(task_ret == pdPASS);
 
-    /* 启动 WiFi 连接（在调度器启动后由 net_tick 驱动，此处触发首次连接） */
-    net_connect();
-
     LOG_I(TAG, "All tasks created, starting scheduler");
 
-    /* 10. 启动 FreeRTOS 调度器（不返回） */
+    /* 10. 启动 FreeRTOS 调度器（不返回）
+     * 注意：net_connect() 改为在 task_net_send 中首次执行，
+     * 不在调度器启动前调用（内含 vTaskDelay 会崩溃）。
+     */
     vTaskStartScheduler();
 
     /* 不应到达此处 */

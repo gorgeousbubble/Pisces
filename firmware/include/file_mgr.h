@@ -100,6 +100,7 @@ uint64_t fm_get_current_file_size(void);
  * @brief 获取连续低速写入秒数（需求 3.8 监控）
  *        返回值 >= WRITE_RATE_SLOW_THRESHOLD_SECS 时应触发告警
  */
+#define WRITE_RATE_SLOW_THRESHOLD_SECS  5U   /**< 持续低速写入触发告警的阈值（秒）*/
 uint32_t fm_get_slow_write_secs(void);
 
 #endif /* FILE_MGR_H */

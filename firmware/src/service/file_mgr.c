@@ -16,9 +16,8 @@
 #include "ipcam_config.h"
 #include "rtc_driver.h"
 #include "ff.h"
-#include "fsl_sdhc.h"
-#include "fsl_clock.h"
 #include "fsl_gpio.h"
+#include "fsl_clock.h"
 #include "board.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -148,11 +147,12 @@ ipcam_status_t fm_init(void)
         return IPCAM_ERR_NOMEM;
     }
 
-    /* 初始化 SDHC 硬件 */
-    if (!sdhc_hw_init()) {
-        LOG_W(TAG, "SDHC init failed, SD storage disabled");
+    /* 检测 SD 卡是否插入（CD 引脚），不在此初始化 SDHC 硬件，
+     * 由 FatFs disk_initialize() 统一完成，避免双重初始化 */
+    if (GPIO_PinRead(SD_CD_GPIO, SD_CD_PIN) != 0U) {
+        LOG_W(TAG, "SD card not detected, local storage disabled");
         s_fm.sd_available = false;
-        s_fm.initialized  = true;  /* 模块已初始化，但 SD 不可用 */
+        s_fm.initialized  = true;
         return IPCAM_ERR_IO;
     }
 

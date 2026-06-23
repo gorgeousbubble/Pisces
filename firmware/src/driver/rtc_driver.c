@@ -390,10 +390,8 @@ uint32_t rtc_get_unix_timestamp(void)
     rtc_datetime_t dt;
     if (rtc_get_datetime(&dt) != IPCAM_OK) return 0U;
 
-    /* 使用 K64 内置 RTC 的秒计数器（从 1970-01-01 起） */
-    /* KSDK RTC_GetDatetime 内部已维护 Unix 时间戳 */
+    /* 使用已读取的 dt 直接计算 Unix 时间戳，无需再次读取 RTC */
     uint32_t unix_ts = 0U;
-    RTC_GetDatetime(RTC, (rtc_datetime_t *)&dt);  /* 重新读取确保一致 */
 
     /* 手动计算 Unix 时间戳 */
     /* 每月天数（非闰年） */
