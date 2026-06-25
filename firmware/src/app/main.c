@@ -151,14 +151,27 @@ static void task_net_send(void *param)
     /* 调度器已启动，此处触发首次 WiFi + TCP 连接 */
     net_connect();
 
-    /* 等待网络连接建立 */
-    while (!net_is_streaming()) {
-        vTaskDelay(pdMS_TO_TICKS(500U));
-    }
-
     for (;;) {
         sys_heartbeat_update(HEARTBEAT_NET_SEND);
 
+        /* 连接断开时执行重连（含 WiFi 硬件复位、重新初始化） */
+        if (!net_is_streaming()) {
+            net_state_t st = net_get_state();
+
+            /* 60s 无连接：先硬件复位 WiFi 模块 */
+            if (st == NET_STATE_OFFLINE || st == NET_STATE_IDLE) {
+                LOG_W(TAG, "Network offline, attempting reconnect with module reset");
+                net_reset_wifi_module();
+                vTaskDelay(pdMS_TO_TICKS(1000U));
+                net_reinit_at();
+            }
+
+            net_connect();
+            vTaskDelay(pdMS_TO_TICKS(500U));
+            continue;
+        }
+
+        /* 正常推流：从队列取帧发送 */
         ipcam_frame_t frame;
         if (xQueueReceive(s_frame_queue_net, &frame, pdMS_TO_TICKS(200U)) != pdTRUE) {
             continue;

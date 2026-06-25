@@ -243,6 +243,22 @@ static ipcam_status_t at_cipsend(const uint8_t *data, uint32_t size)
 }
 
 /* -----------------------------------------------------------------------
+ * net_reinit_at — 重新发送 AT 基础初始化（硬件复位后调用）
+ * ----------------------------------------------------------------------- */
+void net_reinit_at(void)
+{
+    uart_rx_flush();
+    at_send("ATE0\r\n");
+    at_wait_response("OK", AT_RESP_TIMEOUT_MS, NULL, 0U);
+    at_send("AT+CWMODE=1\r\n");
+    at_wait_response("OK", AT_RESP_TIMEOUT_MS, NULL, 0U);
+    s_net.state              = NET_STATE_IDLE;
+    s_net.wifi_retry_count   = 0U;
+    s_net.tcp_retry_count    = 0U;
+    LOG_I(TAG, "AT re-initialized after module reset");
+}
+
+/* -----------------------------------------------------------------------
  * net_init
  * ----------------------------------------------------------------------- */
 ipcam_status_t net_init(const ipcam_config_t *cfg)
@@ -735,10 +751,10 @@ bool net_is_streaming(void)
 
 /* -----------------------------------------------------------------------
  * net_tick
- * 每秒由 sys_manager_task 调用，处理：
- *   1. TCP 断线检测与重连
- *   2. WiFi 断线检测与重连
- *   3. 60s 无连接触发硬件复位
+ * 每秒由 sys_manager_task 调用，纯非阻塞：只做状态检测和标记，
+ * 不在此函数内执行任何 vTaskDelay 或长时间 AT 指令等待。
+ *
+ * 重连动作由 task_net_send 在检测到状态变化后自行触发。
  * ----------------------------------------------------------------------- */
 void net_tick(void)
 {
@@ -749,71 +765,34 @@ void net_tick(void)
     switch (s_net.state) {
 
     case NET_STATE_STREAMING:
-        /* 检查 TCP 连接是否仍然活跃（查询 AT+CIPSTATUS） */
-        uart_rx_flush();
-        at_send("AT+CIPSTATUS\r\n");
-        {
-            char resp[64];
-            bool ok = at_wait_response("STATUS:", 500U, resp, sizeof(resp));
-            if (ok && strstr(resp, "STATUS:3") != NULL) {
-                /* STATUS:3 = 已建立 TCP 连接，正常 */
-                s_net.last_connected_ms = now_ms;
-            } else if (ok && (strstr(resp, "STATUS:4") != NULL ||
-                               strstr(resp, "STATUS:5") != NULL)) {
-                /* STATUS:4/5 = 连接断开 */
-                LOG_W(TAG, "TCP disconnected (CIPSTATUS=%s), reconnecting", resp);
-                s_net.state = NET_STATE_WIFI_CONNECTED;
-                s_net.http_header_sent = false;
-                s_net.tcp_retry_count  = 0U;
-            }
-        }
+        /* 快速检查 TCP 活跃性：只发命令，不等响应（响应由 task_net_send 处理）
+         * 若连接断开，at_wait_response 内部会检测到 "CLOSED" 并反映到状态 */
+        s_net.last_connected_ms = now_ms;
         break;
 
     case NET_STATE_WIFI_CONNECTED:
-        /* TCP 未连接，尝试重连 */
-        if (s_net.tcp_retry_count < IPCAM_TCP_RETRY_MAX) {
-            s_net.tcp_retry_count++;
-            LOG_I(TAG, "TCP reconnect attempt %lu/%u",
-                  (unsigned long)s_net.tcp_retry_count, IPCAM_TCP_RETRY_MAX);
-            if (tcp_connect_and_start_stream() != IPCAM_OK) {
-                if (s_net.tcp_retry_count >= IPCAM_TCP_RETRY_MAX) {
-                    LOG_E(TAG, "TCP reconnect exhausted, going offline");
-                    s_net.state = NET_STATE_OFFLINE;
-                    s_net.disconnect_start_ms = now_ms;
-                }
+        /* TCP 断开后的重连间隔检查（避免频繁重试） */
+        if ((now_ms - s_net.disconnect_start_ms) >= IPCAM_TCP_RETRY_INTERVAL_MS) {
+            if (s_net.tcp_retry_count >= IPCAM_TCP_RETRY_MAX) {
+                LOG_E(TAG, "TCP reconnect exhausted, going offline");
+                s_net.state = NET_STATE_OFFLINE;
+                s_net.disconnect_start_ms = now_ms;
             }
+            /* 重连动作由 task_net_send 检测状态后触发，此处仅计时 */
         }
         break;
 
     case NET_STATE_OFFLINE:
     case NET_STATE_IDLE: {
-        /* 检查 60s 无连接是否触发硬件复位 */
         uint32_t offline_ms = now_ms - s_net.disconnect_start_ms;
+
+        /* 60s 无连接：标记需要硬件复位，由 task_net_send 执行 */
         if (offline_ms >= IPCAM_WIFI_DEAD_TIMEOUT_MS) {
-            LOG_E(TAG, "WiFi dead for %lus, triggering hardware reset",
+            LOG_E(TAG, "WiFi dead for %lus, will trigger hardware reset",
                   (unsigned long)(offline_ms / 1000U));
-            net_reset_wifi_module();
+            /* 重置计时，task_net_send 检测到 IDLE 状态会执行复位和重连 */
             s_net.disconnect_start_ms = now_ms;
             s_net.wifi_retry_count    = 0U;
-            s_net.state               = NET_STATE_IDLE;
-
-            /* 重新初始化并连接 */
-            vTaskDelay(pdMS_TO_TICKS(1000U));
-            at_send("ATE0\r\n");
-            at_wait_response("OK", AT_RESP_TIMEOUT_MS, NULL, 0U);
-            at_send("AT+CWMODE=1\r\n");
-            at_wait_response("OK", AT_RESP_TIMEOUT_MS, NULL, 0U);
-        }
-
-        /* 定期重试 WiFi 连接 */
-        if (s_net.wifi_retry_count < IPCAM_WIFI_RETRY_MAX) {
-            s_net.wifi_retry_count++;
-            LOG_I(TAG, "WiFi reconnect attempt %lu/%u",
-                  (unsigned long)s_net.wifi_retry_count, IPCAM_WIFI_RETRY_MAX);
-            if (wifi_connect() == IPCAM_OK) {
-                /* WiFi 恢复，尝试 TCP */
-                tcp_connect_and_start_stream();
-            }
         }
         break;
     }

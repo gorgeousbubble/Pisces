@@ -82,8 +82,15 @@ bool net_is_streaming(void);
 
 /**
  * @brief 网络层周期性维护（在 sys_manager 任务中每秒调用）
- *        处理断线检测、重连逻辑、60s 无连接触发硬复位。
+ *        纯非阻塞：只做状态检测和计时，不执行 AT 指令或 vTaskDelay。
+ *        重连动作由 task_net_send 负责。
  */
 void net_tick(void);
+
+/**
+ * @brief 硬件复位后重新发送 AT 基础初始化命令
+ *        由 task_net_send 在执行 net_reset_wifi_module() 后调用。
+ */
+void net_reinit_at(void);
 
 #endif /* NET_STACK_H */
