@@ -106,6 +106,16 @@ static void apply_kv(const char *section, const char *key, const char *value)
                       IPCAM_DEFAULT_JPEG_QUALITY);
             }
         }
+    } else if (strcmp(section, "auth") == 0) {
+        if (strcmp(key, "key") == 0) {
+            size_t klen = strlen(value);
+            if (klen > 0U && klen < IPCAM_AUTH_KEY_MAX_LEN) {
+                strncpy(g_ipcam_config.auth_key, value, IPCAM_AUTH_KEY_MAX_LEN - 1U);
+                g_ipcam_config.auth_key[IPCAM_AUTH_KEY_MAX_LEN - 1U] = '\0';
+            } else {
+                LOG_W(TAG, "auth.key invalid length, using default");
+            }
+        }
     }
 }
 
@@ -118,6 +128,7 @@ void config_reset_to_default(void)
     strncpy(g_ipcam_config.wifi_ssid,      IPCAM_DEFAULT_WIFI_SSID,     IPCAM_SSID_MAX_LEN - 1U);
     strncpy(g_ipcam_config.wifi_password,  IPCAM_DEFAULT_WIFI_PASSWORD, IPCAM_PASS_MAX_LEN - 1U);
     strncpy(g_ipcam_config.server_ip,      IPCAM_DEFAULT_SERVER_IP,     IPCAM_IP_MAX_LEN  - 1U);
+    strncpy(g_ipcam_config.auth_key,       IPCAM_DEFAULT_AUTH_KEY,      IPCAM_AUTH_KEY_MAX_LEN - 1U);
     g_ipcam_config.server_port   = IPCAM_DEFAULT_SERVER_PORT;
     g_ipcam_config.jpeg_quality  = IPCAM_DEFAULT_JPEG_QUALITY;
     g_ipcam_config.target_fps    = IPCAM_DEFAULT_TARGET_FPS;
@@ -222,13 +233,17 @@ ipcam_status_t config_save(void)
                    "\r\n"
                    "[camera]\r\n"
                    "fps      = %u\r\n"
-                   "quality  = %u\r\n",
+                   "quality  = %u\r\n"
+                   "\r\n"
+                   "[auth]\r\n"
+                   "key      = %s\r\n",
                    g_ipcam_config.wifi_ssid,
                    g_ipcam_config.wifi_password,
                    g_ipcam_config.server_ip,
                    g_ipcam_config.server_port,
                    g_ipcam_config.target_fps,
-                   g_ipcam_config.jpeg_quality);
+                   g_ipcam_config.jpeg_quality,
+                   g_ipcam_config.auth_key);
 
     if (len > 0) {
         f_write(&fil, buf, (UINT)len, &bw);

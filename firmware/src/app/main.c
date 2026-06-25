@@ -366,8 +366,10 @@ int main(void)
         LOG_W(TAG, "RTC init failed (%d), timestamps may be inaccurate", (int)ret);
     }
 
-    /* 5b. HMAC 认证初始化 */
-    net_auth_init(NULL);  /* NULL = 使用默认密钥，生产环境在 config.ini [auth] key= 中配置 */
+    /* 5b. HMAC 认证初始化（使用 config.ini [auth] key= 中配置的密钥） */
+    net_auth_init(g_ipcam_config.auth_key[0] != '\0'
+                  ? g_ipcam_config.auth_key
+                  : NULL);  /* NULL 时使用编译期默认密钥 */
 
     /* 6. 摄像头驱动 */
     cam_config_t cam_cfg = {

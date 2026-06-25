@@ -48,6 +48,7 @@
 #define IPCAM_SSID_MAX_LEN       32U
 #define IPCAM_PASS_MAX_LEN       64U
 #define IPCAM_IP_MAX_LEN         16U
+#define IPCAM_AUTH_KEY_MAX_LEN   64U   /**< HMAC-SHA256 共享密钥最大长度 */
 
 typedef struct {
     /* WiFi 配置 */
@@ -61,6 +62,9 @@ typedef struct {
     /* 摄像头配置 */
     uint8_t  jpeg_quality;     /**< JPEG 质量因子 50–95 */
     uint8_t  target_fps;       /**< 目标帧率 1–30 */
+
+    /* 认证配置 */
+    char     auth_key[IPCAM_AUTH_KEY_MAX_LEN]; /**< HMAC-SHA256 共享密钥，与服务器保持一致 */
 } ipcam_config_t;
 
 /* -----------------------------------------------------------------------
@@ -72,6 +76,7 @@ typedef struct {
 #define IPCAM_DEFAULT_TARGET_FPS     15U
 #define IPCAM_DEFAULT_WIFI_SSID      "MyHomeWiFi"
 #define IPCAM_DEFAULT_WIFI_PASSWORD  ""
+#define IPCAM_DEFAULT_AUTH_KEY       "pisces-ipcam-default-key-change-me"
 
 /* -----------------------------------------------------------------------
  * 全局配置实例（在 config_loader.c 中定义）
