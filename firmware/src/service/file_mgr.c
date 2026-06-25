@@ -86,29 +86,53 @@ static void get_timestamp_str(char *buf, size_t len)
 /* -----------------------------------------------------------------------
  * 内部辅助：从文件名解析 Unix 时间戳（简化版，仅解析时分秒）
  * 文件名格式：REC_YYYYMMDD_HHMMSS.mjpeg 或 SNAP_YYYYMMDD_HHMMSS.jpg
+ * 返回值：Unix 时间戳（秒），解析失败返回 0
  * ----------------------------------------------------------------------- */
 static uint32_t parse_timestamp_from_name(const char *filename)
 {
-    /* 跳过前缀 "REC_" 或 "SNAP_"，找到 YYYYMMDD_HHMMSS 部分 */
+    /* 跳过前缀：REC_ 或 SNAP_，找到第一个 '_' 后的 YYYYMMDD_HHMMSS 部分 */
     const char *p = strchr(filename, '_');
     if (p == NULL) return 0U;
-    p++; /* 跳过 '_' */
+    p++;  /* 跳过 '_' */
 
-    /* 解析 YYYYMMDD */
-    char date[9] = {0};
-    strncpy(date, p, 8U);
-    uint32_t year  = (uint32_t)strtol(date,     NULL, 10);
-    uint32_t month = (uint32_t)strtol(date + 4, NULL, 10);
-    uint32_t day   = (uint32_t)strtol(date + 6, NULL, 10);
-    (void)year; (void)month; (void)day; /* 简化：不做完整日期转换 */
+    /* 用 sscanf 直接解析 YYYYMMDD_HHMMSS，避免手动偏移计算 */
+    unsigned int year = 0U, month = 0U, day = 0U;
+    unsigned int hh   = 0U, mm    = 0U, ss  = 0U;
+    if (sscanf(p, "%4u%2u%2u_%2u%2u%2u",
+               &year, &month, &day, &hh, &mm, &ss) != 6) {
+        return 0U;
+    }
 
-    /* 解析 HHMMSS */
-    p += 9U; /* 跳过 "YYYYMMDD_" */
-    if (strlen(p) < 6U) return 0U;
-    uint32_t hh = (uint32_t)strtol(p,     NULL, 10) / 10000U % 100U;
-    uint32_t mm = (uint32_t)strtol(p + 2, NULL, 10) / 100U   % 100U;
-    uint32_t ss = (uint32_t)strtol(p + 4, NULL, 10)           % 100U;
-    return hh * 3600U + mm * 60U + ss;
+    /* 简单有效性检查 */
+    if (year < 2000U || year > 2099U ||
+        month < 1U   || month > 12U  ||
+        day   < 1U   || day   > 31U  ||
+        hh    > 23U  || mm    > 59U  || ss > 59U) {
+        return 0U;
+    }
+
+    /* 计算从 1970-01-01 起的近似 Unix 时间戳
+     * 精度足够用于文件排序，无需处理闰秒 */
+    static const uint16_t days_before_month[13] = {
+        0U, 0U, 31U, 59U, 90U, 120U, 151U,
+        181U, 212U, 243U, 273U, 304U, 334U
+    };
+
+    /* 从 1970 年起的天数（粗略，忽略 1970–1999 间的闰年误差） */
+    uint32_t years_since_1970 = year - 1970U;
+    uint32_t leap_days = (years_since_1970 + 1U) / 4U;  /* 粗略计算闰年 */
+    uint32_t days = years_since_1970 * 365U + leap_days
+                  + days_before_month[month]
+                  + day - 1U;
+
+    /* 2000 年后每 4 年一闰（粗略补偿） */
+    bool is_leap = ((year % 4U == 0U) && (year % 100U != 0U)) ||
+                   (year % 400U == 0U);
+    if (is_leap && month > 2U) {
+        days++;
+    }
+
+    return days * 86400U + hh * 3600U + mm * 60U + ss;
 }
 
 /* -----------------------------------------------------------------------
