@@ -218,7 +218,7 @@ static ipcam_status_t k64_rtc_init_hw(void)
         .second = default_dt.second,
     };
     /* KSDK RTC 使用相同的字段名，直接赋值 */
-    RTC_SetDatetime(RTC, (rtc_datetime_t *)&sdk_dt);
+    RTC_SetDatetime(RTC, &sdk_dt);
     RTC_StartTimer(RTC);
 
     LOG_W(TAG, "K64 RTC time was invalid, set to 2026-01-01 00:00:00");
@@ -249,9 +249,9 @@ static ipcam_status_t k64_rtc_write(const rtc_datetime_t *dt)
         .minute = dt->minute,
         .second = dt->second,
     };
-    status_t ret = RTC_SetDatetime(RTC, &sdk_dt);
+    RTC_SetDatetime(RTC, &sdk_dt);
     RTC_StartTimer(RTC);
-    return (ret == kStatus_Success) ? IPCAM_OK : IPCAM_ERR_INVALID;
+    return IPCAM_OK;
 }
 
 /* -----------------------------------------------------------------------
