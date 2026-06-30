@@ -226,37 +226,51 @@ static ipcam_status_t cam_i2c_init(void)
 static uint32_t cam_capture_frame_polling(uint8_t *buf, uint32_t buf_size,
                                           uint32_t timeout_ms)
 {
-    uint32_t start_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    TickType_t start_tick   = xTaskGetTickCount();
+    TickType_t timeout_tick = pdMS_TO_TICKS(timeout_ms);
     uint32_t byte_count = 0U;
     bool     in_frame   = false;
 
     /* 等待 VSYNC 上升沿（帧开始） */
     /* 先等 VSYNC 变低（确保不在帧中间） */
     while (CAM_VSYNC_HIGH()) {
-        if ((uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS) - start_ms
-                > timeout_ms) {
+        if ((xTaskGetTickCount() - start_tick) >= timeout_tick) {
             return 0U;
         }
+        taskYIELD();  /* 让出 CPU，避免饿死看门狗等高优先级任务 */
     }
     /* 再等 VSYNC 上升沿 */
     while (!CAM_VSYNC_HIGH()) {
-        if ((uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS) - start_ms
-                > timeout_ms) {
+        if ((xTaskGetTickCount() - start_tick) >= timeout_tick) {
             return 0U;
         }
+        taskYIELD();
     }
 
     /* VSYNC 高电平期间采集数据 */
     while (CAM_VSYNC_HIGH()) {
+        /* 整帧采集超时保护（防止 VSYNC 卡在高电平） */
+        if ((xTaskGetTickCount() - start_tick) >= timeout_tick) {
+            LOG_W(TAG, "Frame capture timeout at %lu bytes", (unsigned long)byte_count);
+            return 0U;
+        }
+
         /* 等待 HREF 高电平（有效行） */
         if (!CAM_HREF_HIGH()) {
             continue;
         }
 
-        /* 等待 PCLK 上升沿并读取数据字节 */
-        /* 轮询 PCLK：先等低，再等高 */
-        while (CAM_PCLK_HIGH()) { /* 等 PCLK 变低 */ }
-        while (!CAM_PCLK_HIGH()) { /* 等 PCLK 上升沿 */ }
+        /* 等待 PCLK 上升沿并读取数据字节（带超时，防止 PCLK 停止卡死） */
+        while (CAM_PCLK_HIGH()) {
+            if ((xTaskGetTickCount() - start_tick) >= timeout_tick) {
+                return 0U;
+            }
+        }
+        while (!CAM_PCLK_HIGH()) {
+            if ((xTaskGetTickCount() - start_tick) >= timeout_tick) {
+                return 0U;
+            }
+        }
 
         if (!CAM_HREF_HIGH()) {
             continue;  /* HREF 已变低，跳过 */
