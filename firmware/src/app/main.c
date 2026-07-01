@@ -98,10 +98,8 @@ static void task_cam_capture(void *param)
                       (unsigned long)consecutive_timeout);
                 ipcam_status_t ri = cam_reinit();
                 if (ri != IPCAM_OK) {
-                    sys_status_t st;
-                    sys_get_status(&st);
-                    st.cam_available = false;
-                    net_send_status(&st);
+                    /* 请求上报摄像头不可用状态（由 task_net_send 发送） */
+                    net_request_status_report();
                 }
                 consecutive_timeout = 0U;
             }
@@ -181,6 +179,13 @@ static void task_net_send(void *param)
         /* 正常推流：从队列取帧发送 */
         ipcam_frame_t frame;
         if (xQueueReceive(s_frame_queue_net, &frame, pdMS_TO_TICKS(200U)) != pdTRUE) {
+            /* 队列空闲：趁机发送待上报的状态，不与帧发送竞争 */
+            if (net_status_report_pending()) {
+                sys_status_t st;
+                sys_get_status(&st);
+                net_send_status(&st);
+                net_clear_status_report();
+            }
             continue;
         }
 

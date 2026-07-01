@@ -93,4 +93,21 @@ void net_tick(void);
  */
 void net_reinit_at(void);
 
+/**
+ * @brief 请求上报一次系统状态（非阻塞，仅置位标志）
+ *        实际发送由 task_net_send 在推流队列空闲时执行，
+ *        避免多任务调用 net_send_status 竞争发送互斥锁。
+ */
+void net_request_status_report(void);
+
+/**
+ * @brief 查询是否有待发送的状态上报请求
+ */
+bool net_status_report_pending(void);
+
+/**
+ * @brief 清除状态上报请求标志（发送完成后调用）
+ */
+void net_clear_status_report(void);
+
 #endif /* NET_STACK_H */

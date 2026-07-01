@@ -76,6 +76,25 @@ typedef struct {
 
 static net_state_data_t s_net;
 
+/* 状态上报请求标志：由其他任务置位，task_net_send 在空闲时消费，
+ * 避免 net_send_status 从多个任务调用时与帧发送竞争 tx_mutex */
+static volatile bool s_status_report_pending = false;
+
+void net_request_status_report(void)
+{
+    s_status_report_pending = true;
+}
+
+bool net_status_report_pending(void)
+{
+    return s_status_report_pending;
+}
+
+void net_clear_status_report(void)
+{
+    s_status_report_pending = false;
+}
+
 /* -----------------------------------------------------------------------
  * UART4 接收中断处理（将数据写入环形缓冲区）
  * 修复：原为 UART1_RX_TX_IRQHandler，已改用 UART4 避免 PTC3/PTC4 冲突

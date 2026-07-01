@@ -118,26 +118,21 @@ void sys_manager_task(void *param)
         /* --- 网络层周期维护 --- */
         net_tick();
 
-        /* --- 定时上报状态 --- */
+        /* --- 定时上报状态（仅置位标志，实际发送由 task_net_send 执行）--- */
         status_report_counter++;
         if (status_report_counter >= (IPCAM_STATUS_REPORT_INTERVAL_MS / 1000U)) {
             status_report_counter = 0U;
-            sys_status_t st;
-            sys_get_status(&st);
-            net_send_status(&st);
+            net_request_status_report();
         }
 
         /* --- 写入速率告警检查（需求 3.8）--- */
-        /* 节流：最多每 30 秒上报一次，避免频繁调用阻塞的 net_send_status
-         * 导致本任务周期拉长、其他任务心跳超时触发连锁复位 */
+        /* 节流：最多每 30 秒上报一次 */
         if (fm_get_slow_write_secs() >= WRITE_RATE_SLOW_THRESHOLD_SECS &&
             (now_ms - s_last_slow_report_ms) >= SLOW_WRITE_REPORT_INTERVAL_MS) {
             s_last_slow_report_ms = now_ms;
             LOG_W(TAG, "SD write performance degraded for %lu seconds",
                   (unsigned long)fm_get_slow_write_secs());
-            sys_status_t st;
-            sys_get_status(&st);
-            net_send_status(&st);
+            net_request_status_report();
         }
 
         /* --- LED 状态指示 --- */
