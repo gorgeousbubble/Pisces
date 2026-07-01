@@ -16,6 +16,7 @@
  */
 
 #include "net_stack.h"
+#include "net_auth.h"
 #include "log.h"
 #include "board.h"
 #include "ipcam_config.h"
@@ -392,16 +393,23 @@ static ipcam_status_t tcp_connect_and_start_stream(void)
         return IPCAM_ERR_TIMEOUT;
     }
 
-    /* 发送 HTTP POST 推流头 */
-    char http_header[256];
+    /* 发送 HTTP POST 推流头（带 HMAC 认证） */
+    char http_header[384];
+    uint32_t ts_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    char hmac_hex[HMAC_HEX_LEN];
+    net_auth_sign("POST", "/stream", ts_ms, NULL, 0U, hmac_hex);
+
     int hlen = snprintf(http_header, sizeof(http_header),
         "POST /stream HTTP/1.1\r\n"
         "Host: %s:%u\r\n"
         "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
         "Transfer-Encoding: chunked\r\n"
         "Connection: keep-alive\r\n"
+        "X-Timestamp: %lu\r\n"
+        "X-HMAC-SHA256: %s\r\n"
         "\r\n",
-        s_net.cfg.server_ip, s_net.cfg.server_port);
+        s_net.cfg.server_ip, s_net.cfg.server_port,
+        (unsigned long)ts_ms, hmac_hex);
 
     if (hlen > 0) {
         ipcam_status_t ret = at_cipsend((const uint8_t *)http_header, (uint32_t)hlen);
@@ -554,19 +562,27 @@ ipcam_status_t net_send_snapshot(const uint8_t *jpeg, uint32_t size, bool sd_fai
         return IPCAM_ERR_BUSY;
     }
 
-    /* 构造 HTTP POST 请求 */
-    char http_req[256];
+    /* 构造 HTTP POST 请求（带 HMAC 认证） */
+    char http_req[384];
+    uint32_t ts_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    char hmac_hex[HMAC_HEX_LEN];
+    net_auth_sign("POST", "/snapshot", ts_ms, NULL, 0U, hmac_hex);
+
     int hlen = snprintf(http_req, sizeof(http_req),
         "POST /snapshot HTTP/1.1\r\n"
         "Host: %s:%u\r\n"
         "Content-Type: image/jpeg\r\n"
         "Content-Length: %lu\r\n"
         "X-SD-Failed: %s\r\n"
+        "X-Timestamp: %lu\r\n"
+        "X-HMAC-SHA256: %s\r\n"
         "\r\n",
         s_net.cfg.server_ip,
         s_net.cfg.server_port,
         (unsigned long)size,
-        sd_failed ? "true" : "false");
+        sd_failed ? "true" : "false",
+        (unsigned long)ts_ms,
+        hmac_hex);
 
     ipcam_status_t ret = IPCAM_OK;
 
@@ -636,14 +652,21 @@ ipcam_status_t net_send_status(const sys_status_t *status)
         return IPCAM_ERR_BUSY;
     }
 
-    char http_req[128];
+    char http_req[256];
+    uint32_t ts_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    char hmac_hex[HMAC_HEX_LEN];
+    net_auth_sign("POST", "/status", ts_ms, NULL, 0U, hmac_hex);
+
     int hlen = snprintf(http_req, sizeof(http_req),
         "POST /status HTTP/1.1\r\n"
         "Host: %s:%u\r\n"
         "Content-Type: application/json\r\n"
         "Content-Length: %d\r\n"
+        "X-Timestamp: %lu\r\n"
+        "X-HMAC-SHA256: %s\r\n"
         "\r\n",
-        s_net.cfg.server_ip, s_net.cfg.server_port, jlen);
+        s_net.cfg.server_ip, s_net.cfg.server_port, jlen,
+        (unsigned long)ts_ms, hmac_hex);
 
     ipcam_status_t ret = IPCAM_OK;
 
