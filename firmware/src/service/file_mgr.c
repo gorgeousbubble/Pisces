@@ -419,13 +419,29 @@ ipcam_status_t fm_save_snapshot(const uint8_t *data, uint32_t size, char *out_pa
 
 /* -----------------------------------------------------------------------
  * fm_get_free_space
+ * f_getfree 首次调用需扫描整个 FAT 表（数十 ms），故加缓存：
+ * 5 秒内复用上次结果，避免高频写入路径每帧扫描拖慢 SD 写入速率。
  * ----------------------------------------------------------------------- */
+#define FREE_SPACE_CACHE_MS   5000U
+
 ipcam_status_t fm_get_free_space(uint32_t *free_mb)
 {
     if (free_mb == NULL) return IPCAM_ERR_INVALID;
     if (!s_fm.sd_available) {
         *free_mb = 0U;
         return IPCAM_ERR_IO;
+    }
+
+    static uint32_t s_cached_free_mb  = UINT32_MAX;
+    static uint32_t s_cache_tick      = 0U;
+
+    uint32_t now = (uint32_t)xTaskGetTickCount();
+
+    /* 缓存有效期内直接返回上次结果 */
+    if (s_cached_free_mb != UINT32_MAX &&
+        (now - s_cache_tick) < pdMS_TO_TICKS(FREE_SPACE_CACHE_MS)) {
+        *free_mb = s_cached_free_mb;
+        return IPCAM_OK;
     }
 
     DWORD   free_clust;
@@ -442,6 +458,10 @@ ipcam_status_t fm_get_free_space(uint32_t *free_mb)
                         * (uint64_t)fs_ptr->csize
                         * 512ULL;
     *free_mb = (uint32_t)(free_bytes / (1024ULL * 1024ULL));
+
+    /* 更新缓存 */
+    s_cached_free_mb = *free_mb;
+    s_cache_tick     = now;
     return IPCAM_OK;
 }
 
