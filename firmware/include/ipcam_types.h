@@ -36,6 +36,7 @@ typedef struct {
     uint32_t  frame_id;      /**< 帧序号（单调递增） */
     uint32_t  timestamp_ms;  /**< 采集完成时间戳（系统 tick，ms） */
     bool      is_snapshot;   /**< true = 拍照帧，false = 普通视频帧 */
+    int8_t    buf_idx;       /**< 所属缓冲区索引（用于引用计数），-1 = 不受管理 */
 } ipcam_frame_t;
 
 /* -----------------------------------------------------------------------

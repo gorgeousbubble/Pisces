@@ -115,27 +115,34 @@ static void task_cam_capture(void *param)
 
         consecutive_timeout = 0U;
 
-        /* 拍照帧单独处理 */
+        /* 拍照帧单独处理：引用转移给 s_snapshot_frame，
+         * 由 task_cmd_handler 上传完成后调用 cam_release_frame 释放 */
         if (frame.is_snapshot) {
             memcpy(&s_snapshot_frame, &frame, sizeof(ipcam_frame_t));
             xSemaphoreGive(s_snapshot_sem);
-            cam_release_frame(&frame);
             continue;
         }
 
-        /* 分发到网络队列（满则丢帧） */
-        if (xQueueSend(s_frame_queue_net, &frame, 0U) != pdTRUE) {
+        /* 分发到网络队列：成功入队则增加引用计数 */
+        if (xQueueSend(s_frame_queue_net, &frame, 0U) == pdTRUE) {
+            cam_frame_addref(&frame);
+        } else {
             sys_drop_counter_inc();
             LOG_W(TAG, "Net queue full, frame #%lu dropped",
                   (unsigned long)frame.frame_id);
-            cam_release_frame(&frame);
         }
 
-        /* 分发到文件队列（满则跳过，不计入 drop_counter） */
-        if (xQueueSend(s_frame_queue_file, &frame, 0U) != pdTRUE) {
+        /* 分发到文件队列：成功入队则增加引用计数 */
+        if (xQueueSend(s_frame_queue_file, &frame, 0U) == pdTRUE) {
+            cam_frame_addref(&frame);
+        } else {
             LOG_D(TAG, "File queue full, frame #%lu skipped",
                   (unsigned long)frame.frame_id);
         }
+
+        /* 释放采集任务初始持有的一份引用；
+         * 若两个队列都未入队，此时引用计数归零，缓冲区立即可复用 */
+        cam_release_frame(&frame);
     }
 }
 
@@ -221,6 +228,7 @@ static void task_file_write(void *param)
         }
 
         if (!fm_is_sd_available()) {
+            cam_release_frame(&frame);
             continue;
         }
 
@@ -234,6 +242,7 @@ static void task_file_write(void *param)
             LOG_W(TAG, "SD card low space: %lu MB", (unsigned long)free_mb);
             fm_stop_recording();
             /* 告警已在 sys_manager 中处理 */
+            cam_release_frame(&frame);
             continue;
         }
 
@@ -247,6 +256,9 @@ static void task_file_write(void *param)
         } else {
             write_fail_count = 0U;
         }
+
+        /* 写入完成，释放引用 */
+        cam_release_frame(&frame);
     }
 }
 
@@ -292,6 +304,9 @@ static void task_cmd_handler(void *param)
                 }
                 /* 上传到服务器 */
                 net_send_snapshot(s_snapshot_frame.data, s_snapshot_frame.size, sd_failed);
+
+                /* 释放拍照帧引用，允许采集侧复用该缓冲区 */
+                cam_release_frame(&s_snapshot_frame);
             } else {
                 LOG_W(TAG, "Snapshot timeout (no frame in %ums)", IPCAM_SNAPSHOT_TIMEOUT_MS);
             }

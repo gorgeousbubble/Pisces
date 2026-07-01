@@ -66,6 +66,17 @@ ipcam_status_t cam_get_frame(ipcam_frame_t *frame, uint32_t timeout_ms);
 void cam_release_frame(const ipcam_frame_t *frame);
 
 /**
+ * @brief 增加帧缓冲区引用计数（分发给额外消费者前调用）
+ *
+ * 每将同一帧投递给一个新的消费者队列前调用一次，
+ * 消费者用完后必须调用 cam_release_frame 配对递减。
+ * 只有引用计数归零后，采集侧才会复用该缓冲区。
+ *
+ * @param frame  由 cam_get_frame 返回的帧
+ */
+void cam_frame_addref(const ipcam_frame_t *frame);
+
+/**
  * @brief 重新初始化摄像头（用于错误恢复）
  * @return IPCAM_OK 或错误码
  */

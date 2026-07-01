@@ -71,6 +71,10 @@ static uint8_t  s_frame_buf[2][IPCAM_JPEG_BUF_SIZE];
 static uint8_t  s_write_buf_idx = 0U;   /**< 当前采集写入的缓冲区 */
 static uint8_t  s_read_buf_idx  = 1U;   /**< 上一帧就绪的缓冲区（供读取）*/
 
+/* 每个缓冲区的引用计数：0 = 空闲可复用，>0 = 正被消费者持有
+ * 采集侧写入前必须确认目标缓冲区计数为 0，否则丢帧避免覆盖 */
+static volatile int8_t s_buf_refcount[2] = {0, 0};
+
 /* -----------------------------------------------------------------------
  * 驱动状态
  * ----------------------------------------------------------------------- */
@@ -331,6 +335,16 @@ void cam_capture_task_body(void)
         return;
     }
 
+    /* 检查目标写缓冲区是否仍被消费者持有，是则丢帧避免数据竞争 */
+    if (s_buf_refcount[s_write_buf_idx] != 0) {
+        s_cam.drop_count++;
+        sys_drop_counter_inc();
+        LOG_W(TAG, "Write buffer %u still in use (refcount=%d), frame dropped",
+              (unsigned)s_write_buf_idx, (int)s_buf_refcount[s_write_buf_idx]);
+        vTaskDelay(pdMS_TO_TICKS(2U));  /* 短暂让出，等消费者释放 */
+        return;
+    }
+
     uint8_t *write_buf = s_frame_buf[s_write_buf_idx];
     uint32_t size = cam_capture_frame_polling(write_buf, IPCAM_JPEG_BUF_SIZE,
                                               IPCAM_CAM_FRAME_TIMEOUT_MS);
@@ -349,8 +363,10 @@ void cam_capture_task_body(void)
     s_cam.timeout_frame_count = 0U;
     s_frame_ready_size = size;
 
-    /* 切换双缓冲：下一帧写入另一个缓冲区 */
+    /* 切换双缓冲：刚写好的成为读缓冲，引用计数置 1（采集任务持有一份）
+     * 另一个缓冲区成为下一帧的写目标 */
     s_read_buf_idx  = s_write_buf_idx;
+    s_buf_refcount[s_read_buf_idx] = 1;
     s_write_buf_idx ^= 1U;
 
     /* 通知等待者（任务上下文，使用普通版本） */
@@ -469,6 +485,7 @@ ipcam_status_t cam_get_frame(ipcam_frame_t *frame, uint32_t timeout_ms)
     frame->frame_id     = s_cam.frame_id;
     frame->timestamp_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     frame->is_snapshot  = false;
+    frame->buf_idx      = (int8_t)s_read_buf_idx;  /* 记录所属缓冲区，供引用计数 */
 
     /* FPS 统计 */
     s_cam.fps_frame_count++;
@@ -483,12 +500,31 @@ ipcam_status_t cam_get_frame(ipcam_frame_t *frame, uint32_t timeout_ms)
 }
 
 /* -----------------------------------------------------------------------
- * cam_release_frame
+ * cam_release_frame / cam_frame_addref
+ * 引用计数管理：归零后采集侧方可复用该缓冲区
  * ----------------------------------------------------------------------- */
 void cam_release_frame(const ipcam_frame_t *frame)
 {
-    (void)frame;
-    /* 双缓冲：写缓冲区已在 cam_capture_task_body 中切换，无需额外操作 */
+    if (frame == NULL) return;
+    int8_t idx = frame->buf_idx;
+    if (idx < 0 || idx > 1) return;  /* 不受管理的帧 */
+
+    taskENTER_CRITICAL();
+    if (s_buf_refcount[idx] > 0) {
+        s_buf_refcount[idx]--;
+    }
+    taskEXIT_CRITICAL();
+}
+
+void cam_frame_addref(const ipcam_frame_t *frame)
+{
+    if (frame == NULL) return;
+    int8_t idx = frame->buf_idx;
+    if (idx < 0 || idx > 1) return;
+
+    taskENTER_CRITICAL();
+    s_buf_refcount[idx]++;
+    taskEXIT_CRITICAL();
 }
 
 /* -----------------------------------------------------------------------
