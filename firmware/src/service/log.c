@@ -2,8 +2,8 @@
  * @file log.c
  * @brief 串口日志模块实现
  *
- * 使用环形缓冲区 + UART DMA 发送，支持多任务并发写入（FreeRTOS Mutex 保护）。
- * 在 ISR 中调用时自动降级为轮询发送。
+ * 通过 UART0 阻塞发送，多任务并发写入由 FreeRTOS Mutex 保护。
+ * 在 ISR 中调用时使用独立栈缓冲，不加锁直接发送。
  */
 
 #include "log.h"
@@ -23,12 +23,11 @@
  * ----------------------------------------------------------------------- */
 #define LOG_LINE_MAX   256U   /**< 单行日志最大字节数 */
 
-static uint8_t  s_log_buf[IPCAM_LOG_BUF_SIZE];  /**< 环形缓冲区 */
-static uint32_t s_buf_head = 0U;                 /**< 写指针 */
-static uint32_t s_buf_tail = 0U;                 /**< 读指针 */
 static bool     s_initialized = false;
-
 static SemaphoreHandle_t s_log_mutex = NULL;
+
+/* 任务上下文共享的行缓冲区（由 s_log_mutex 保护，避免占用每个任务的栈） */
+static char     s_line[LOG_LINE_MAX];
 
 static const char * const s_level_str[] = {
     "D", "I", "W", "E"
@@ -42,20 +41,35 @@ static void log_uart_send_blocking(const uint8_t *data, uint32_t len)
     UART_WriteBlocking(LOG_UART, data, len);
 }
 
-static uint32_t log_buf_write(const uint8_t *data, uint32_t len)
+/* 将日志格式化到指定缓冲区，返回总长度（含 \r\n），0 表示失败 */
+static uint32_t log_format(char *buf, log_level_t level,
+                           const char *tag, const char *fmt, va_list args)
 {
-    uint32_t written = 0U;
-    for (uint32_t i = 0U; i < len; i++) {
-        uint32_t next = (s_buf_head + 1U) % IPCAM_LOG_BUF_SIZE;
-        if (next == s_buf_tail) {
-            /* 缓冲区满，丢弃剩余数据 */
-            break;
-        }
-        s_log_buf[s_buf_head] = data[i];
-        s_buf_head = next;
-        written++;
+    uint32_t ts = log_get_timestamp_ms();
+
+    int prefix_len = snprintf(buf, LOG_LINE_MAX,
+                              "[%8lu][%s][%-8s] ",
+                              (unsigned long)ts,
+                              s_level_str[level],
+                              tag ? tag : "");
+    if (prefix_len < 0 || prefix_len >= (int)LOG_LINE_MAX) {
+        return 0U;
     }
-    return written;
+
+    int msg_len = vsnprintf(buf + prefix_len,
+                            LOG_LINE_MAX - (size_t)prefix_len - 2U,
+                            fmt, args);
+    if (msg_len < 0) {
+        return 0U;
+    }
+
+    uint32_t total = (uint32_t)prefix_len + (uint32_t)msg_len;
+    if (total + 2U < LOG_LINE_MAX) {
+        buf[total]     = '\r';
+        buf[total + 1] = '\n';
+        total += 2U;
+    }
+    return total;
 }
 
 /* -----------------------------------------------------------------------
@@ -103,49 +117,28 @@ void log_write(log_level_t level, const char *tag, const char *fmt, ...)
         return;
     }
 
-    char line[LOG_LINE_MAX];
-    uint32_t ts = log_get_timestamp_ms();
-
-    /* 格式：[时间戳ms][级别][标签] 消息\r\n */
-    int prefix_len = snprintf(line, sizeof(line),
-                              "[%8lu][%s][%-8s] ",
-                              (unsigned long)ts,
-                              s_level_str[level],
-                              tag ? tag : "");
-    if (prefix_len < 0 || prefix_len >= (int)sizeof(line)) {
-        return;
-    }
-
     va_list args;
-    va_start(args, fmt);
-    int msg_len = vsnprintf(line + prefix_len,
-                            sizeof(line) - (size_t)prefix_len - 2U,
-                            fmt, args);
-    va_end(args);
 
-    if (msg_len < 0) {
-        return;
-    }
-
-    /* 追加 \r\n */
-    uint32_t total = (uint32_t)prefix_len + (uint32_t)msg_len;
-    if (total + 2U < sizeof(line)) {
-        line[total]     = '\r';
-        line[total + 1] = '\n';
-        total += 2U;
-    }
-
-    /* 判断是否在 ISR 中（使用 CMSIS 标准寄存器，比 xPortIsInsideInterrupt 更可靠） */
+    /* ISR 上下文：用独立栈缓冲，不加锁直接发送 */
     if (__get_IPSR() != 0U) {
-        /* ISR 中直接阻塞发送，不使用缓冲区 */
-        log_uart_send_blocking((const uint8_t *)line, total);
+        char isr_line[LOG_LINE_MAX];
+        va_start(args, fmt);
+        uint32_t total = log_format(isr_line, level, tag, fmt, args);
+        va_end(args);
+        if (total > 0U) {
+            log_uart_send_blocking((const uint8_t *)isr_line, total);
+        }
         return;
     }
 
-    /* 任务上下文：加锁写入缓冲区，然后发送 */
+    /* 任务上下文：加锁后使用共享 static 缓冲，格式化和发送均在锁内 */
     if (xSemaphoreTake(s_log_mutex, pdMS_TO_TICKS(10U)) == pdTRUE) {
-        /* 简化实现：直接阻塞发送（生产环境可改为 DMA 异步） */
-        log_uart_send_blocking((const uint8_t *)line, total);
+        va_start(args, fmt);
+        uint32_t total = log_format(s_line, level, tag, fmt, args);
+        va_end(args);
+        if (total > 0U) {
+            log_uart_send_blocking((const uint8_t *)s_line, total);
+        }
         xSemaphoreGive(s_log_mutex);
     }
 }

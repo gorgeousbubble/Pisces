@@ -20,7 +20,6 @@
 
 #define IPCAM_FRAME_QUEUE_DEPTH  2U            /**< 编码帧队列深度 */
 #define IPCAM_JPEG_BUF_SIZE      (40U * 1024U) /**< 单帧 JPEG 最大字节数 40KB */
-#define IPCAM_LOG_BUF_SIZE       (4U * 1024U)  /**< 日志环形缓冲区大小 */
 #define IPCAM_AT_BUF_SIZE        512U           /**< AT 指令收发缓冲区 */
 #define IPCAM_CMD_BUF_SIZE       256U           /**< 服务器命令接收缓冲区 */
 
