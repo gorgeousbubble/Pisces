@@ -90,11 +90,16 @@ void sys_watchdog_task(void *param)
 /* -----------------------------------------------------------------------
  * sys_manager_task（低优先级，每秒执行）
  * ----------------------------------------------------------------------- */
+
+/* 写入速率告警上报节流间隔（ms），避免频繁阻塞上报导致心跳超时 */
+#define SLOW_WRITE_REPORT_INTERVAL_MS  30000U
+
 void sys_manager_task(void *param)
 {
     (void)param;
     const TickType_t period = pdMS_TO_TICKS(1000U);
     uint32_t status_report_counter = 0U;
+    uint32_t s_last_slow_report_ms = 0U;
 
     for (;;) {
         uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
@@ -123,10 +128,13 @@ void sys_manager_task(void *param)
         }
 
         /* --- 写入速率告警检查（需求 3.8）--- */
-        if (fm_get_slow_write_secs() >= WRITE_RATE_SLOW_THRESHOLD_SECS) {
+        /* 节流：最多每 30 秒上报一次，避免频繁调用阻塞的 net_send_status
+         * 导致本任务周期拉长、其他任务心跳超时触发连锁复位 */
+        if (fm_get_slow_write_secs() >= WRITE_RATE_SLOW_THRESHOLD_SECS &&
+            (now_ms - s_last_slow_report_ms) >= SLOW_WRITE_REPORT_INTERVAL_MS) {
+            s_last_slow_report_ms = now_ms;
             LOG_W(TAG, "SD write performance degraded for %lu seconds",
                   (unsigned long)fm_get_slow_write_secs());
-            /* 即时上报（不等定时周期） */
             sys_status_t st;
             sys_get_status(&st);
             net_send_status(&st);
