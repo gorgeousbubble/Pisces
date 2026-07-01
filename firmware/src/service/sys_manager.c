@@ -15,6 +15,7 @@
 #include "ipcam_config.h"
 #include "fsl_wdog.h"
 #include "fsl_gpio.h"
+#include "fsl_rcm.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include <string.h>
@@ -34,8 +35,14 @@ static volatile uint32_t s_drop_counter = 0U;
 /** 系统启动时间戳（ms） */
 static uint32_t s_boot_tick_ms = 0U;
 
-/** 上次复位原因（存储在 VBAT 寄存器，掉电保持） */
-#define RESET_REASON_REG   (*(volatile uint32_t *)0x4003E000U)  /* LLWU_FILT1 借用 */
+/**
+ * 软复位细分原因存储在 RFVBAT 寄存器文件（VBAT 供电，掉电保持）
+ * 地址 0x4003E000 = RFVBAT->REG[0]（K64 的 VBAT register file）
+ * 高字节写入魔术字校验，防止 VBAT 未供电时读到随机值被误判。
+ * 硬件复位源（POR/看门狗/引脚）另由 RCM 模块识别。
+ */
+#define RESET_REASON_MAGIC   0x5A000000U  /**< 高字节魔术字 */
+#define RESET_REASON_MASK    0x000000FFU  /**< 低字节存放原因值 */
 
 /* -----------------------------------------------------------------------
  * 看门狗初始化
@@ -190,8 +197,8 @@ void sys_soft_reset(reset_reason_t reason)
     LOG_E(TAG, "Soft reset triggered, reason=%d", (int)reason);
     log_flush();
 
-    /* 保存复位原因（借用 VBAT 寄存器，掉电保持） */
-    RESET_REASON_REG = (uint32_t)reason;
+    /* 保存软复位细分原因到 RFVBAT（掉电保持），带魔术字校验 */
+    RFVBAT->REG[0] = RESET_REASON_MAGIC | ((uint32_t)reason & RESET_REASON_MASK);
 
     /* 触发 Cortex-M4 软复位 */
     NVIC_SystemReset();
@@ -199,15 +206,35 @@ void sys_soft_reset(reset_reason_t reason)
 
 /* -----------------------------------------------------------------------
  * sys_get_last_reset_reason
+ * 先用 RCM 识别硬件复位源，软件复位再从 RFVBAT 读细分原因
  * ----------------------------------------------------------------------- */
 reset_reason_t sys_get_last_reset_reason(void)
 {
-    uint32_t val = RESET_REASON_REG;
-    RESET_REASON_REG = (uint32_t)RESET_REASON_POWER_ON;  /* 清除 */
-    if (val > (uint32_t)RESET_REASON_POWER_ON) {
-        return RESET_REASON_UNKNOWN;
+    uint32_t src = RCM_GetPreviousResetSources(RCM);
+    reset_reason_t reason = RESET_REASON_POWER_ON;
+
+    if (src & kRCM_SourcePor) {
+        /* 上电复位 */
+        reason = RESET_REASON_POWER_ON;
+    } else if (src & kRCM_SourceWdog) {
+        /* 看门狗硬件超时复位 */
+        reason = RESET_REASON_WATCHDOG;
+    } else if (src & kRCM_SourceSw) {
+        /* 软件复位：从 RFVBAT 读细分原因 */
+        uint32_t reg = RFVBAT->REG[0];
+        if ((reg & 0xFF000000U) == RESET_REASON_MAGIC) {
+            reason = (reset_reason_t)(reg & RESET_REASON_MASK);
+        } else {
+            reason = RESET_REASON_SOFT;
+        }
+    } else if (src & kRCM_SourcePin) {
+        /* 外部引脚复位 */
+        reason = RESET_REASON_UNKNOWN;
     }
-    return (reset_reason_t)val;
+
+    /* 清除 RFVBAT 记录，供下次识别 */
+    RFVBAT->REG[0] = 0U;
+    return reason;
 }
 
 /* -----------------------------------------------------------------------
