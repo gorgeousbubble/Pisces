@@ -391,10 +391,6 @@ uint32_t rtc_get_unix_timestamp(void)
     if (rtc_get_datetime(&dt) != IPCAM_OK) return 0U;
 
     /* 使用已读取的 dt 直接计算 Unix 时间戳，无需再次读取 RTC */
-    uint32_t unix_ts = 0U;
-
-    /* 手动计算 Unix 时间戳 */
-    /* 每月天数（非闰年） */
     static const uint16_t days_in_month[12] = {
         31U, 28U, 31U, 30U, 31U, 30U, 31U, 31U, 30U, 31U, 30U, 31U
     };
@@ -403,24 +399,30 @@ uint32_t rtc_get_unix_timestamp(void)
     uint32_t month = dt.month;
     uint32_t day   = dt.day;
 
-    /* 从 1970 年起累计天数 */
-    uint32_t days = 0U;
-    for (uint32_t y = 1970U; y < year; y++) {
-        bool leap = ((y % 4U == 0U) && (y % 100U != 0U)) || (y % 400U == 0U);
-        days += leap ? 366U : 365U;
-    }
+    /* 从 1970 年起累计天数（O(1) 公式，避免逐年循环）
+     * 闰年数 = floor((y-1)/4) - floor((y-1)/100) + floor((y-1)/400)
+     * 其中 y 为当前年份，统计 1970..year-1 完整年的闰年数 */
+    uint32_t y1 = year - 1U;
+    uint32_t leap_before_year =
+        (y1 / 4U       - 1969U / 4U) -
+        (y1 / 100U     - 1969U / 100U) +
+        (y1 / 400U     - 1969U / 400U);
+    uint32_t days = (year - 1970U) * 365U + leap_before_year;
+
+    /* 累加当年已过整月天数 */
     for (uint32_t m = 1U; m < month; m++) {
         days += days_in_month[m - 1U];
-        /* 2 月闰年补 1 天 */
-        if (m == 2U) {
-            bool leap = ((year % 4U == 0U) && (year % 100U != 0U)) ||
-                        (year % 400U == 0U);
-            if (leap) days++;
-        }
     }
+    /* 当年是闰年且已过 2 月，补 1 天 */
+    bool cur_leap = ((year % 4U == 0U) && (year % 100U != 0U)) ||
+                    (year % 400U == 0U);
+    if (cur_leap && month > 2U) {
+        days++;
+    }
+
     days += day - 1U;
 
-    unix_ts = days * 86400U
+    uint32_t unix_ts = days * 86400U
             + (uint32_t)dt.hour   * 3600U
             + (uint32_t)dt.minute * 60U
             + (uint32_t)dt.second;
