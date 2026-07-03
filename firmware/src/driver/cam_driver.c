@@ -55,6 +55,12 @@
 #define OV2640_REG_COM7        0x12U
 #define OV2640_IMAGE_JPEG      0x10U
 
+/* JPEG 标记字节 */
+#define JPEG_MARKER_FF   0xFFU
+#define JPEG_SOI_D8      0xD8U   /**< Start Of Image 第二字节 */
+#define JPEG_EOI_D9      0xD9U   /**< End Of Image 第二字节 */
+#define JPEG_SOI_SCAN_LIMIT  64U /**< SOI 只在帧头前 64 字节内检测，避免载荷误判 */
+
 /* -----------------------------------------------------------------------
  * GPIO 快速读取宏（直接访问寄存器，避免函数调用开销）
  * PTD 数据输入寄存器：读取 D0-D7（PTD0-PTD7）
@@ -293,28 +299,29 @@ static uint32_t cam_capture_frame_polling(uint8_t *buf, uint32_t buf_size,
 
         /* 检测 JPEG 结束标记 0xFF 0xD9 */
         if (byte_count >= 2U &&
-            buf[byte_count - 2U] == 0xFFU &&
-            buf[byte_count - 1U] == 0xD9U) {
+            buf[byte_count - 2U] == JPEG_MARKER_FF &&
+            buf[byte_count - 1U] == JPEG_EOI_D9) {
             in_frame = false;
             break;  /* JPEG 完整，提前退出 */
         }
 
-        /* 检测 JPEG 开始标记 0xFF 0xD8 */
-        if (!in_frame && byte_count >= 2U &&
-            buf[byte_count - 2U] == 0xFFU &&
-            buf[byte_count - 1U] == 0xD8U) {
+        /* 检测 JPEG 开始标记 0xFF 0xD8，仅在帧头前若干字节内检测，
+         * 避免 JPEG 载荷中偶发的 FF D8 序列被误判为新帧起始 */
+        if (!in_frame && byte_count >= 2U && byte_count <= JPEG_SOI_SCAN_LIMIT &&
+            buf[byte_count - 2U] == JPEG_MARKER_FF &&
+            buf[byte_count - 1U] == JPEG_SOI_D8) {
             in_frame = true;
             /* 将 SOI 移到缓冲区起始（丢弃之前的无效字节） */
-            buf[0] = 0xFFU;
-            buf[1] = 0xD8U;
+            buf[0] = JPEG_MARKER_FF;
+            buf[1] = JPEG_SOI_D8;
             byte_count = 2U;
         }
     }
 
     /* 验证 JPEG 完整性 */
     if (byte_count < 4U ||
-        buf[0] != 0xFFU || buf[1] != 0xD8U ||
-        buf[byte_count - 2U] != 0xFFU || buf[byte_count - 1U] != 0xD9U) {
+        buf[0] != JPEG_MARKER_FF || buf[1] != JPEG_SOI_D8 ||
+        buf[byte_count - 2U] != JPEG_MARKER_FF || buf[byte_count - 1U] != JPEG_EOI_D9) {
         LOG_W(TAG, "Incomplete JPEG frame: %lu bytes", (unsigned long)byte_count);
         return 0U;
     }
