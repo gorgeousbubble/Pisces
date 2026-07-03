@@ -60,6 +60,13 @@ static volatile uart_ring_buf_t s_rx_buf;
 static char     s_cmd_buf[IPCAM_CMD_BUF_SIZE];
 static bool     s_cmd_pending = false;
 
+/* JSON 命令字段键（用 sizeof(key)-1 计算跳过长度，避免硬编码偏移量） */
+#define JSON_KEY_CMD      "\"cmd\":"
+#define JSON_KEY_QUALITY  "\"quality\":"
+#define JSON_KEY_FPS      "\"fps\":"
+#define JSON_KEY_WIDTH    "\"width\":"
+#define JSON_KEY_HEIGHT   "\"height\":"
+
 /* -----------------------------------------------------------------------
  * 网络层状态
  * ----------------------------------------------------------------------- */
@@ -691,6 +698,32 @@ ipcam_status_t net_send_status(const sys_status_t *status)
 }
 
 /* -----------------------------------------------------------------------
+ * 私有：从 JSON 缓冲区解析指定键的整数值
+ * @param buf      JSON 字符串
+ * @param key      键（含引号和冒号，如 "\"quality\":"）
+ * @param key_len  键长度（sizeof(key)-1）
+ * @param def_val  解析失败时的默认值
+ * @return 解析出的整数，键不存在或格式非法时返回 def_val
+ * ----------------------------------------------------------------------- */
+static long json_parse_int(const char *buf, const char *key,
+                           size_t key_len, long def_val)
+{
+    const char *p = strstr(buf, key);
+    if (p == NULL) {
+        return def_val;
+    }
+    p += key_len;               /* 跳过键，指向值起始 */
+    while (*p == ' ') p++;       /* 跳过可能的空格 */
+
+    char *endp = NULL;
+    long  val  = strtol(p, &endp, 10);
+    if (endp == p) {             /* 没有解析到任何数字 */
+        return def_val;
+    }
+    return val;
+}
+
+/* -----------------------------------------------------------------------
  * net_recv_cmd
  * 非阻塞检查是否有服务器下发的命令
  * 命令格式（JSON）：
@@ -708,43 +741,35 @@ ipcam_status_t net_recv_cmd(ipcam_cmd_t *cmd)
         return IPCAM_ERR_NOT_FOUND;
     }
 
-    /* 简单 JSON 解析（不依赖外部库） */
     const char *buf = s_cmd_buf;
 
-    /* 解析 "cmd" 字段 */
-    const char *cmd_val = strstr(buf, "\"cmd\":");
+    /* 解析 "cmd" 字段值起始位置 */
+    const char *cmd_val = strstr(buf, JSON_KEY_CMD);
     if (cmd_val == NULL) {
         s_cmd_pending = false;
         return IPCAM_ERR_NOT_FOUND;
     }
-    cmd_val += 6U;  /* 跳过 "cmd": */
+    cmd_val += sizeof(JSON_KEY_CMD) - 1U;  /* 跳过 "cmd": */
     while (*cmd_val == ' ' || *cmd_val == '"') cmd_val++;
 
     if (strncmp(cmd_val, "snapshot", 8U) == 0) {
         cmd->type    = CMD_SNAPSHOT;
-        cmd->quality = 85U;   /* 默认值 */
-        cmd->width   = 1280U;
-        cmd->height  = 720U;
-
-        /* 解析可选参数 */
-        const char *q = strstr(buf, "\"quality\":");
-        if (q) cmd->quality = (uint8_t)strtol(q + 10U, NULL, 10);
-
-        const char *w = strstr(buf, "\"width\":");
-        if (w) cmd->width = (uint16_t)strtol(w + 8U, NULL, 10);
-
-        const char *h = strstr(buf, "\"height\":");
-        if (h) cmd->height = (uint16_t)strtol(h + 9U, NULL, 10);
+        cmd->quality = (uint8_t)json_parse_int(buf, JSON_KEY_QUALITY,
+                                               sizeof(JSON_KEY_QUALITY) - 1U, 85);
+        cmd->width   = (uint16_t)json_parse_int(buf, JSON_KEY_WIDTH,
+                                                sizeof(JSON_KEY_WIDTH) - 1U, 1280);
+        cmd->height  = (uint16_t)json_parse_int(buf, JSON_KEY_HEIGHT,
+                                                sizeof(JSON_KEY_HEIGHT) - 1U, 720);
 
     } else if (strncmp(cmd_val, "set_fps", 7U) == 0) {
         cmd->type = CMD_SET_FPS;
-        const char *f = strstr(buf, "\"fps\":");
-        cmd->fps = (f != NULL) ? (uint8_t)strtol(f + 6U, NULL, 10) : 15U;
+        cmd->fps  = (uint8_t)json_parse_int(buf, JSON_KEY_FPS,
+                                            sizeof(JSON_KEY_FPS) - 1U, 15);
 
     } else if (strncmp(cmd_val, "set_quality", 11U) == 0) {
-        cmd->type = CMD_SET_QUALITY;
-        const char *q = strstr(buf, "\"quality\":");
-        cmd->quality = (q != NULL) ? (uint8_t)strtol(q + 10U, NULL, 10) : 75U;
+        cmd->type    = CMD_SET_QUALITY;
+        cmd->quality = (uint8_t)json_parse_int(buf, JSON_KEY_QUALITY,
+                                               sizeof(JSON_KEY_QUALITY) - 1U, 75);
 
     } else if (strncmp(cmd_val, "reboot", 6U) == 0) {
         cmd->type = CMD_REBOOT;
