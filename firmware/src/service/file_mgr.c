@@ -51,6 +51,7 @@ typedef struct {
     char     rec_filename[FM_FILENAME_MAX_LEN];
     uint64_t rec_file_size;
     uint32_t rec_seq;
+    uint32_t sync_counter;    /**< 帧写入同步计数，每 N 帧 f_sync 一次 */
     FATFS    fs;
     SemaphoreHandle_t mutex;
     write_perf_t perf;
@@ -260,6 +261,7 @@ ipcam_status_t fm_start_recording(void)
 
     s_fm.recording      = true;
     s_fm.rec_file_size  = 0U;
+    s_fm.sync_counter   = 0U;
 
     xSemaphoreGive(s_fm.mutex);
 
@@ -340,11 +342,10 @@ ipcam_status_t fm_write_frame(const uint8_t *data, uint32_t size)
     s_fm.rec_file_size += (uint64_t)(sizeof(hdr) + size);
 
     /* 每 30 帧 sync 一次，平衡性能与数据安全 */
-    static uint32_t sync_counter = 0U;
-    sync_counter++;
-    if (sync_counter >= 30U) {
+    s_fm.sync_counter++;
+    if (s_fm.sync_counter >= 30U) {
         f_sync(&s_fm.rec_file);
-        sync_counter = 0U;
+        s_fm.sync_counter = 0U;
     }
 
     /* 写入速率监控（每秒检查一次） */
