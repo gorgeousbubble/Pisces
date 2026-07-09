@@ -37,18 +37,15 @@ def set_hmac_key(key: str) -> None:
     logger.info("HMAC key updated")
 
 
-def _compute_hmac(method: str, path: str, ts_ms: int,
-                  body: Optional[bytes] = None) -> str:
-    """计算 HMAC-SHA256，与 MCU net_auth.c 逻辑完全一致。"""
-    msg = f"{method}:{path}:{ts_ms}"
-    if body:
-        prefix = body[:32]
-        msg_bytes = msg.encode() + b":" + prefix
-    else:
-        msg_bytes = msg.encode()
+def _compute_hmac(method: str, path: str, ts_ms: int) -> str:
+    """计算 HMAC-SHA256，与 MCU net_auth.c 的 net_auth_sign 逻辑完全一致。
 
-    digest = hmac.new(_HMAC_KEY, msg_bytes, hashlib.sha256).hexdigest()
-    return digest
+    签名消息 = "method:path:timestamp"（不含 body）。
+    MCU 端所有请求均以 NULL body 调用 net_auth_sign，故服务器端也不含 body，
+    保证两侧签名一致。
+    """
+    msg = f"{method}:{path}:{ts_ms}"
+    return hmac.new(_HMAC_KEY, msg.encode(), hashlib.sha256).hexdigest()
 
 
 def verify_mcu_request(method: str,
@@ -82,8 +79,8 @@ def verify_mcu_request(method: str,
     # 此处仅验证签名正确性，不严格验证时间戳绝对值
     # 生产环境中应在 MCU 获取 NTP 时间后使用 Unix 时间戳
 
-    # 计算期望的 HMAC
-    expected = _compute_hmac(method, path, ts_ms, body)
+    # 计算期望的 HMAC（不含 body，与 MCU net_auth_sign 一致）
+    expected = _compute_hmac(method, path, ts_ms)
 
     # 使用 hmac.compare_digest 防止时序攻击
     if not hmac.compare_digest(expected.lower(), hmac_header.lower()):
