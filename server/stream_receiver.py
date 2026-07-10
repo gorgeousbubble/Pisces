@@ -221,15 +221,7 @@ async def _handle_mcu_connection(
         logger.debug("MCU first line: %s", first_line_str)
 
         if first_line_str.startswith("POST /stream"):
-            # 视频流推送：跳过 HTTP 头，进入 MJPEG 解析
-            while True:
-                line = await asyncio.wait_for(reader.readline(), timeout=5.0)
-                if line in (b"\r\n", b"\n", b""):
-                    break
-            await _parse_mjpeg_stream(reader)
-
-        elif first_line_str.startswith("POST /snapshot"):
-            # 拍照上传：读取 HTTP 头，获取 Content-Length
+            # 视频流推送：解析 HTTP 头并验证 HMAC，再进入 MJPEG 解析
             headers: dict[str, str] = {}
             while True:
                 line = await asyncio.wait_for(reader.readline(), timeout=5.0)
@@ -239,7 +231,44 @@ async def _handle_mcu_connection(
                     k, v = line.decode("utf-8", errors="ignore").split(":", 1)
                     headers[k.strip().lower()] = v.strip()
 
-            content_length = int(headers.get("content-length", "0"))
+            from api.auth_hmac import verify_mcu_request
+            ok, reason = verify_mcu_request(
+                "POST", "/stream",
+                headers.get("x-timestamp"),
+                headers.get("x-hmac-sha256"),
+            )
+            if not ok:
+                logger.warning("Stream push HMAC failed from %s: %s", peer, reason)
+                return  # 拒绝未认证的推流连接
+
+            await _parse_mjpeg_stream(reader)
+
+        elif first_line_str.startswith("POST /snapshot"):
+            # 拍照上传：读取 HTTP 头，验证 HMAC，获取 Content-Length
+            headers = {}
+            while True:
+                line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+                if line in (b"\r\n", b"\n", b""):
+                    break
+                if b":" in line:
+                    k, v = line.decode("utf-8", errors="ignore").split(":", 1)
+                    headers[k.strip().lower()] = v.strip()
+
+            from api.auth_hmac import verify_mcu_request
+            ok, reason = verify_mcu_request(
+                "POST", "/snapshot",
+                headers.get("x-timestamp"),
+                headers.get("x-hmac-sha256"),
+            )
+            if not ok:
+                logger.warning("Snapshot upload HMAC failed from %s: %s", peer, reason)
+                return  # 拒绝未认证的照片上传
+
+            try:
+                content_length = int(headers.get("content-length", "0"))
+            except ValueError:
+                logger.warning("Snapshot: invalid Content-Length header")
+                return
             sd_failed_str  = headers.get("x-sd-failed", "false").lower()
             sd_failed      = sd_failed_str == "true"
 
