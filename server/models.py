@@ -161,8 +161,16 @@ async def insert_snapshot(filename: str, taken_at: str,
         await db.commit()
 
 
+# 状态日志插入计数器：每 STATUS_LOG_CLEANUP_INTERVAL 次插入才清理一次，
+# 避免每次状态上报（约每 10s）都执行一遍全表清理子查询。
+# stream_receiver 单连接协程串行调用，无并发，普通整数计数即可。
+_status_log_insert_count = 0
+STATUS_LOG_CLEANUP_INTERVAL = 20
+
+
 async def insert_status_log(status: dict) -> None:
-    """写入状态日志，并保留最近 N 条。"""
+    """写入状态日志，并周期性保留最近 N 条。"""
+    global _status_log_insert_count
     async with aiosqlite.connect(config.DB_PATH) as db:
         await db.execute(
             "INSERT INTO mcu_status_log "
@@ -178,10 +186,13 @@ async def insert_status_log(status: dict) -> None:
                 int(status.get("sd_available", True)),
             ),
         )
-        # 保留最近 MAX 条
-        await db.execute(
-            "DELETE FROM mcu_status_log WHERE id NOT IN "
-            "(SELECT id FROM mcu_status_log ORDER BY id DESC LIMIT ?)",
-            (config.STATUS_LOG_MAX_ROWS,),
-        )
+        # 每 STATUS_LOG_CLEANUP_INTERVAL 次插入才清理一次，保留最近 MAX 条
+        _status_log_insert_count += 1
+        if _status_log_insert_count >= STATUS_LOG_CLEANUP_INTERVAL:
+            _status_log_insert_count = 0
+            await db.execute(
+                "DELETE FROM mcu_status_log WHERE id NOT IN "
+                "(SELECT id FROM mcu_status_log ORDER BY id DESC LIMIT ?)",
+                (config.STATUS_LOG_MAX_ROWS,),
+            )
         await db.commit()

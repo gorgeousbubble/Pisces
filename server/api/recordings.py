@@ -16,7 +16,7 @@ from typing import Optional
 
 import aiofiles
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
 import config
@@ -27,6 +27,41 @@ logger = logging.getLogger("api.recordings")
 router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
 
 CHUNK_SIZE = 64 * 1024  # 64KB 分块传输
+
+
+def _parse_range(range_header: str, file_size: int):
+    """解析 HTTP Range 头（仅支持单段 bytes=start-end / bytes=start- / bytes=-N）。
+
+    返回 (start, end) 闭区间字节偏移；无法满足则返回 None（调用方应回 416）。
+    """
+    if not range_header or not range_header.startswith("bytes="):
+        return None
+    # 只处理第一段，忽略多段请求
+    spec = range_header[len("bytes="):].split(",")[0].strip()
+    if "-" not in spec:
+        return None
+
+    start_s, _, end_s = spec.partition("-")
+    try:
+        if start_s == "":
+            # 后缀形式 bytes=-N：请求最后 N 字节
+            if end_s == "":
+                return None
+            n = int(end_s)
+            if n <= 0:
+                return None
+            start = max(0, file_size - n)
+            end = file_size - 1
+        else:
+            start = int(start_s)
+            end = int(end_s) if end_s != "" else file_size - 1
+    except ValueError:
+        return None
+
+    if start > end or start >= file_size:
+        return None
+    end = min(end, file_size - 1)
+    return start, end
 
 
 def _parse_iso8601(value: str, param_name: str) -> datetime:
@@ -120,9 +155,9 @@ async def list_recordings(
 
 @router.get(
     "/recordings/{filename}",
-    summary="下载或在线播放录像文件",
+    summary="下载或在线播放录像文件（支持 HTTP Range 断点/拖动）",
 )
-async def get_recording(filename: str) -> StreamingResponse:
+async def get_recording(filename: str, request: Request) -> StreamingResponse:
     # 防止路径穿越攻击
     if "/" in filename or "\\" in filename or ".." in filename:
         raise HTTPException(
@@ -139,23 +174,51 @@ async def get_recording(filename: str) -> StreamingResponse:
 
     file_size = file_path.stat().st_size
 
+    # 解析 Range 头，支持播放器拖动定位（seek）
+    range_header = request.headers.get("range")
+    start = 0
+    end = file_size - 1
+    status_code = status.HTTP_200_OK
+
+    if range_header:
+        parsed = _parse_range(range_header, file_size)
+        if parsed is None:
+            # 无法满足的 Range：回 416 并告知总大小
+            raise HTTPException(
+                status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                detail="Requested Range Not Satisfiable",
+                headers={"Content-Range": f"bytes */{file_size}"},
+            )
+        start, end = parsed
+        status_code = status.HTTP_206_PARTIAL_CONTENT
+
+    content_length = end - start + 1
+
     async def file_generator():
         async with aiofiles.open(file_path, "rb") as f:
-            while True:
-                chunk = await f.read(CHUNK_SIZE)
+            await f.seek(start)
+            remaining = content_length
+            while remaining > 0:
+                chunk = await f.read(min(CHUNK_SIZE, remaining))
                 if not chunk:
-                    break
+                    break  # 文件在读取过程中被截断，提前结束
+                remaining -= len(chunk)
                 yield chunk
 
     # 根据文件扩展名决定 Content-Type
     media_type = "video/x-mjpeg" if filename.endswith(".mjpeg") else "application/octet-stream"
 
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Length": str(content_length),
+        "Accept-Ranges": "bytes",
+    }
+    if status_code == status.HTTP_206_PARTIAL_CONTENT:
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+
     return StreamingResponse(
         file_generator(),
+        status_code=status_code,
         media_type=media_type,
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Length": str(file_size),
-            "Accept-Ranges": "bytes",
-        },
+        headers=headers,
     )

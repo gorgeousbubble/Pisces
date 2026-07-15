@@ -52,6 +52,8 @@ typedef struct {
     uint64_t rec_file_size;
     uint32_t rec_seq;
     uint32_t sync_counter;    /**< 帧写入同步计数，每 N 帧 f_sync 一次 */
+    uint32_t cached_free_mb;  /**< 剩余空间缓存值，UINT32_MAX 表示未缓存 */
+    uint32_t free_cache_tick; /**< 缓存写入时的 tick，用于判断有效期 */
     FATFS    fs;
     SemaphoreHandle_t mutex;
     write_perf_t perf;
@@ -171,6 +173,9 @@ ipcam_status_t fm_init(void)
         LOG_E(TAG, "Failed to create mutex");
         return IPCAM_ERR_NOMEM;
     }
+
+    /* 剩余空间缓存初始为未命中（memset 已清零，此处显式设为 UINT32_MAX） */
+    s_fm.cached_free_mb = UINT32_MAX;
 
     /* 检测 SD 卡是否插入（CD 引脚），不在此初始化 SDHC 硬件，
      * 由 FatFs disk_initialize() 统一完成，避免双重初始化 */
@@ -433,15 +438,24 @@ ipcam_status_t fm_get_free_space(uint32_t *free_mb)
         return IPCAM_ERR_IO;
     }
 
-    static uint32_t s_cached_free_mb  = UINT32_MAX;
-    static uint32_t s_cache_tick      = 0U;
+    /* 缓存读写由 s_fm.mutex 保护，避免 task_file_write 与 sys_manager_task
+     * 同时判定缓存失效各自触发一次 f_getfree 全 FAT 扫描拖慢写入路径 */
+    if (xSemaphoreTake(s_fm.mutex, pdMS_TO_TICKS(100U)) != pdTRUE) {
+        /* 拿不到锁时若有旧缓存则退回旧值，否则报忙 */
+        if (s_fm.cached_free_mb != UINT32_MAX) {
+            *free_mb = s_fm.cached_free_mb;
+            return IPCAM_OK;
+        }
+        return IPCAM_ERR_BUSY;
+    }
 
     uint32_t now = (uint32_t)xTaskGetTickCount();
 
     /* 缓存有效期内直接返回上次结果 */
-    if (s_cached_free_mb != UINT32_MAX &&
-        (now - s_cache_tick) < pdMS_TO_TICKS(FREE_SPACE_CACHE_MS)) {
-        *free_mb = s_cached_free_mb;
+    if (s_fm.cached_free_mb != UINT32_MAX &&
+        (now - s_fm.free_cache_tick) < pdMS_TO_TICKS(FREE_SPACE_CACHE_MS)) {
+        *free_mb = s_fm.cached_free_mb;
+        xSemaphoreGive(s_fm.mutex);
         return IPCAM_OK;
     }
 
@@ -451,6 +465,7 @@ ipcam_status_t fm_get_free_space(uint32_t *free_mb)
     if (fr != FR_OK) {
         LOG_W(TAG, "f_getfree failed: FRESULT=%d", (int)fr);
         *free_mb = 0U;
+        xSemaphoreGive(s_fm.mutex);
         return IPCAM_ERR_IO;
     }
 
@@ -461,8 +476,9 @@ ipcam_status_t fm_get_free_space(uint32_t *free_mb)
     *free_mb = (uint32_t)(free_bytes / (1024ULL * 1024ULL));
 
     /* 更新缓存 */
-    s_cached_free_mb = *free_mb;
-    s_cache_tick     = now;
+    s_fm.cached_free_mb  = *free_mb;
+    s_fm.free_cache_tick = now;
+    xSemaphoreGive(s_fm.mutex);
     return IPCAM_OK;
 }
 
