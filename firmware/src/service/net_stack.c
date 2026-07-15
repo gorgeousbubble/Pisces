@@ -19,6 +19,7 @@
 #include "net_auth.h"
 #include "log.h"
 #include "board.h"
+#include "sys_manager.h"
 #include "ipcam_config.h"
 #include "fsl_uart.h"
 #include "fsl_gpio.h"
@@ -55,10 +56,54 @@ typedef struct {
 static volatile uart_ring_buf_t s_rx_buf;
 
 /* -----------------------------------------------------------------------
+ * 活跃网络任务心跳 ID
+ *
+ * net_connect / net_send_* 等函数可能同步阻塞数秒到数分钟（WiFi/TCP 重试），
+ * 远超 HEARTBEAT_TIMEOUT_MS(3s)。若阻塞期间不刷新调用任务的心跳，
+ * sys_manager 会误判该任务已死并触发软复位——断网即重启死循环。
+ *
+ * 因此在所有长等待点周期性调用 sys_heartbeat_update(s_active_hb_id)，
+ * 由调用任务通过 net_set_active_heartbeat() 指明自己的心跳 ID。
+ * 默认 HEARTBEAT_NET_SEND（绝大多数网络阻塞发生在推流任务）。
+ * ----------------------------------------------------------------------- */
+static volatile heartbeat_id_t s_active_hb_id = HEARTBEAT_NET_SEND;
+
+/* 长等待期间喂心跳的节流间隔（ms） */
+#define CONN_HEARTBEAT_FEED_MS   500U
+
+void net_set_active_heartbeat(heartbeat_id_t id)
+{
+    if (id < HEARTBEAT_COUNT) {
+        s_active_hb_id = id;
+    }
+}
+
+/* 分段延时，期间周期性刷新活跃任务心跳，避免长睡眠触发心跳超时复位 */
+static void conn_delay_with_heartbeat(uint32_t total_ms)
+{
+    uint32_t elapsed = 0U;
+    while (elapsed < total_ms) {
+        uint32_t step = (total_ms - elapsed) < CONN_HEARTBEAT_FEED_MS
+                        ? (total_ms - elapsed) : CONN_HEARTBEAT_FEED_MS;
+        sys_heartbeat_update(s_active_hb_id);
+        vTaskDelay(pdMS_TO_TICKS(step));
+        elapsed += step;
+    }
+    sys_heartbeat_update(s_active_hb_id);
+}
+
+/* -----------------------------------------------------------------------
  * 命令接收缓冲区（存储服务器下发的 JSON 命令）
+ *
+ * 写者：task_net_send（在 at_wait_response 中检测到 JSON 行时）
+ * 读者：task_cmd_handler（通过 net_recv_cmd 轮询）
+ * 两者是不同任务，必须通过互斥锁保护，否则可能出现：
+ *   - strncpy 写入过程中被读者抢占，读到一半新一半旧的“撕裂”数据
+ *   - s_cmd_pending 标志与 s_cmd_buf 内容不一致
  * ----------------------------------------------------------------------- */
 static char     s_cmd_buf[IPCAM_CMD_BUF_SIZE];
 static bool     s_cmd_pending = false;
+static SemaphoreHandle_t s_cmd_mutex = NULL;
 
 /* JSON 命令字段键（用 sizeof(key)-1 计算跳过长度，避免硬编码偏移量） */
 #define JSON_KEY_CMD      "\"cmd\":"
@@ -167,11 +212,18 @@ static bool at_wait_response(const char *expected,
     char    line[256];
     uint32_t line_pos = 0U;
     uint32_t start_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    uint32_t last_hb_ms = start_ms;
 
     while (true) {
         uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         if ((now_ms - start_ms) >= timeout_ms) {
             return false;  /* 超时 */
+        }
+
+        /* 长等待期间周期性喂心跳，防止 sys_manager 误判任务死亡 */
+        if ((now_ms - last_hb_ms) >= CONN_HEARTBEAT_FEED_MS) {
+            sys_heartbeat_update(s_active_hb_id);
+            last_hb_ms = now_ms;
         }
 
         uint8_t byte;
@@ -210,10 +262,16 @@ static bool at_wait_response(const char *expected,
 
             /* 检查是否为服务器下发的命令（以 '{' 开头的 JSON） */
             if (line[0] == '{' && line_pos > 2U) {
-                strncpy(s_cmd_buf, line, IPCAM_CMD_BUF_SIZE - 1U);
-                s_cmd_buf[IPCAM_CMD_BUF_SIZE - 1U] = '\0';
-                s_cmd_pending = true;
-                LOG_D(TAG, "Command received: %s", s_cmd_buf);
+                if (s_cmd_mutex != NULL &&
+                    xSemaphoreTake(s_cmd_mutex, pdMS_TO_TICKS(50U)) == pdTRUE) {
+                    strncpy(s_cmd_buf, line, IPCAM_CMD_BUF_SIZE - 1U);
+                    s_cmd_buf[IPCAM_CMD_BUF_SIZE - 1U] = '\0';
+                    s_cmd_pending = true;
+                    xSemaphoreGive(s_cmd_mutex);
+                    LOG_D(TAG, "Command received: %s", s_cmd_buf);
+                } else {
+                    LOG_W(TAG, "Command buffer busy, command dropped");
+                }
             }
 
             line_pos = 0U;
@@ -231,9 +289,15 @@ static bool at_wait_response(const char *expected,
 static bool at_wait_prompt(uint32_t timeout_ms)
 {
     uint32_t start_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    uint32_t last_hb_ms = start_ms;
     while (true) {
         uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         if ((now_ms - start_ms) >= timeout_ms) return false;
+
+        if ((now_ms - last_hb_ms) >= CONN_HEARTBEAT_FEED_MS) {
+            sys_heartbeat_update(s_active_hb_id);
+            last_hb_ms = now_ms;
+        }
 
         uint8_t byte;
         if (uart_rx_read_byte(&byte) && byte == '>') {
@@ -319,6 +383,12 @@ ipcam_status_t net_init(const ipcam_config_t *cfg)
     /* 创建发送互斥锁 */
     s_net.tx_mutex = xSemaphoreCreateMutex();
     if (s_net.tx_mutex == NULL) {
+        return IPCAM_ERR_NOMEM;
+    }
+
+    /* 创建命令缓冲区互斥锁（保护 s_cmd_buf / s_cmd_pending 跨任务访问） */
+    s_cmd_mutex = xSemaphoreCreateMutex();
+    if (s_cmd_mutex == NULL) {
         return IPCAM_ERR_NOMEM;
     }
 
@@ -448,7 +518,7 @@ ipcam_status_t net_connect(void)
             LOG_W(TAG, "WiFi retry %lu/%u in %ums",
                   (unsigned long)(i + 1U), IPCAM_WIFI_RETRY_MAX,
                   IPCAM_WIFI_RETRY_INTERVAL_MS);
-            vTaskDelay(pdMS_TO_TICKS(IPCAM_WIFI_RETRY_INTERVAL_MS));
+            conn_delay_with_heartbeat(IPCAM_WIFI_RETRY_INTERVAL_MS);
         }
     }
 
@@ -467,7 +537,7 @@ ipcam_status_t net_connect(void)
             LOG_W(TAG, "TCP retry %lu/%u in %ums",
                   (unsigned long)(i + 1U), IPCAM_TCP_RETRY_MAX,
                   IPCAM_TCP_RETRY_INTERVAL_MS);
-            vTaskDelay(pdMS_TO_TICKS(IPCAM_TCP_RETRY_INTERVAL_MS));
+            conn_delay_with_heartbeat(IPCAM_TCP_RETRY_INTERVAL_MS);
         }
     }
 
@@ -741,12 +811,23 @@ ipcam_status_t net_recv_cmd(ipcam_cmd_t *cmd)
         return IPCAM_ERR_NOT_FOUND;
     }
 
-    const char *buf = s_cmd_buf;
+    /* 加锁后将命令拷贝到本地缓冲区再解析，避免解析期间
+     * task_net_send 写入新命令造成数据撕裂 */
+    char local_buf[IPCAM_CMD_BUF_SIZE];
+    if (s_cmd_mutex == NULL ||
+        xSemaphoreTake(s_cmd_mutex, pdMS_TO_TICKS(50U)) != pdTRUE) {
+        return IPCAM_ERR_BUSY;
+    }
+    strncpy(local_buf, s_cmd_buf, IPCAM_CMD_BUF_SIZE - 1U);
+    local_buf[IPCAM_CMD_BUF_SIZE - 1U] = '\0';
+    s_cmd_pending = false;
+    xSemaphoreGive(s_cmd_mutex);
+
+    const char *buf = local_buf;
 
     /* 解析 "cmd" 字段值起始位置 */
     const char *cmd_val = strstr(buf, JSON_KEY_CMD);
     if (cmd_val == NULL) {
-        s_cmd_pending = false;
         return IPCAM_ERR_NOT_FOUND;
     }
     cmd_val += sizeof(JSON_KEY_CMD) - 1U;  /* 跳过 "cmd": */
@@ -774,8 +855,6 @@ ipcam_status_t net_recv_cmd(ipcam_cmd_t *cmd)
     } else if (strncmp(cmd_val, "reboot", 6U) == 0) {
         cmd->type = CMD_REBOOT;
     }
-
-    s_cmd_pending = false;
 
     if (cmd->type != CMD_NONE) {
         LOG_I(TAG, "Command parsed: type=%d", (int)cmd->type);

@@ -219,7 +219,9 @@ ipcam_status_t config_save(void)
     }
 
     UINT bw;
-    char buf[256];
+    /* 缓冲区需容纳所有字段最坏长度：ssid(32)+password(64)+ip(16)+auth_key(64)
+     * 加上模板固定文本约 130 字节，256 会溢出，使用 512 留足余量 */
+    char buf[512];
     int  len;
 
     len = snprintf(buf, sizeof(buf),
@@ -246,6 +248,12 @@ ipcam_status_t config_save(void)
                    g_ipcam_config.auth_key);
 
     if (len > 0) {
+        /* snprintf 返回的是未截断的应写长度，若被截断需 clamp，
+         * 否则 f_write 会读取 buf 之外的栈内存写入文件 */
+        if (len >= (int)sizeof(buf)) {
+            len = (int)sizeof(buf) - 1;
+            LOG_W(TAG, "config_save: content truncated to buffer size");
+        }
         f_write(&fil, buf, (UINT)len, &bw);
     }
 

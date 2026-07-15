@@ -293,8 +293,15 @@ static void task_cmd_handler(void *param)
             /* 切换到高分辨率 */
             uint8_t  q = (cmd.quality >= 80U)  ? cmd.quality : 80U;
 
+            /* 拍照上传（net_send_snapshot）可能长时间阻塞，
+             * 期间让网络层刷新本任务心跳，避免被误判死亡触发复位 */
+            net_set_active_heartbeat(HEARTBEAT_CMD_HANDLER);
+
             cam_set_resolution(CAM_RES_HD720P);
             cam_set_quality(q);
+
+            /* 请求将下一帧标记为拍照帧，采集任务会通过 s_snapshot_sem 通知 */
+            cam_request_snapshot();
 
             /* 等待拍照帧（超时 3 秒） */
             bool sd_failed = false;
@@ -319,11 +326,15 @@ static void task_cmd_handler(void *param)
             /* 恢复 VGA 模式 */
             cam_set_resolution(CAM_RES_VGA);
             cam_set_quality(g_ipcam_config.jpeg_quality);
+
+            /* 拍照上传结束，心跳 ID 复位给推流任务 */
+            net_set_active_heartbeat(HEARTBEAT_NET_SEND);
             break;
         }
 
         case CMD_SET_FPS:
             if (cmd.fps >= 1U && cmd.fps <= 30U) {
+                cam_set_fps(cmd.fps);
                 g_ipcam_config.target_fps = cmd.fps;
                 LOG_I(TAG, "FPS set to %u", cmd.fps);
             }

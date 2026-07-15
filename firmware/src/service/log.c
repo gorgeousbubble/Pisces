@@ -148,9 +148,19 @@ void log_write(log_level_t level, const char *tag, const char *fmt, ...)
  * ----------------------------------------------------------------------- */
 void log_flush(void)
 {
-    /* 等待 UART 发送完成 */
+    /* 有界忙等：等待 UART 发送完成，但设自旋上限。
+     *
+     * log_flush 主要用于 sys_soft_reset() 复位前刷出日志，属于错误恢复路径。
+     * 若 UART 外设异常（TC 标志永不置位），无上限忙等会导致复位永远无法执行，
+     * 使本应触发复位的故障演变为彻底挂死。故设纯软件自旋上限（不依赖
+     * tick/中断，兼容 HardFault/栈溢出钩子等异常上下文），超限即放弃刷新。
+     *
+     * 约 200 万次空循环，@120MHz 上限约数十毫秒，足够正常发送完成。 */
+    uint32_t guard = 0U;
     while (!(UART_GetStatusFlags(LOG_UART) & kUART_TransmissionCompleteFlag)) {
-        /* 忙等 */
+        if (++guard >= 2000000U) {
+            break;
+        }
     }
 }
 

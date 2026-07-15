@@ -105,6 +105,14 @@ static SemaphoreHandle_t s_frame_ready_sem = NULL;
 /* 最新就绪帧的实际字节数 */
 static volatile uint32_t s_frame_ready_size = 0U;
 
+/* 拍照请求标志：cam_request_snapshot 置位，采集到下一帧后消费并清除。
+ * s_frame_ready_is_snapshot 记录当前就绪帧是否为拍照帧，供 cam_get_frame 读取。 */
+static volatile bool s_snapshot_requested   = false;
+static volatile bool s_frame_ready_is_snapshot = false;
+
+/* 上一帧开始采集的时间戳（ms），用于按 target_fps 节流采集 */
+static uint32_t s_last_frame_start_ms = 0U;
+
 /* -----------------------------------------------------------------------
  * OV2640 SCCB (I2C0) 操作
  * ----------------------------------------------------------------------- */
@@ -352,6 +360,18 @@ void cam_capture_task_body(void)
         return;
     }
 
+    /* FPS 节流：按 target_fps 控制帧启动间隔，降低 CPU 占用与上行带宽。
+     * 拍照请求挂起时跳过节流，尽快抓取高分辨率帧。 */
+    if (!s_snapshot_requested && s_cam.config.target_fps > 0U) {
+        uint32_t interval_ms = 1000U / s_cam.config.target_fps;
+        uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        uint32_t elapsed = now_ms - s_last_frame_start_ms;
+        if (elapsed < interval_ms) {
+            vTaskDelay(pdMS_TO_TICKS(interval_ms - elapsed));
+        }
+    }
+    s_last_frame_start_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+
     uint8_t *write_buf = s_frame_buf[s_write_buf_idx];
     uint32_t size = cam_capture_frame_polling(write_buf, IPCAM_JPEG_BUF_SIZE,
                                               IPCAM_CAM_FRAME_TIMEOUT_MS);
@@ -369,6 +389,10 @@ void cam_capture_task_body(void)
     /* 采集成功：更新就绪帧信息，切换缓冲区，释放信号量 */
     s_cam.timeout_frame_count = 0U;
     s_frame_ready_size = size;
+
+    /* 消费拍照请求：本帧若被请求为拍照帧则打标，请求随即清除 */
+    s_frame_ready_is_snapshot = s_snapshot_requested;
+    s_snapshot_requested = false;
 
     /* 切换双缓冲：刚写好的成为读缓冲，引用计数置 1（采集任务持有一份）
      * 另一个缓冲区成为下一帧的写目标 */
@@ -491,7 +515,7 @@ ipcam_status_t cam_get_frame(ipcam_frame_t *frame, uint32_t timeout_ms)
     frame->size         = s_frame_ready_size;
     frame->frame_id     = s_cam.frame_id;
     frame->timestamp_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    frame->is_snapshot  = false;
+    frame->is_snapshot  = s_frame_ready_is_snapshot;
     frame->buf_idx      = (int8_t)s_read_buf_idx;  /* 记录所属缓冲区，供引用计数 */
 
     /* FPS 统计 */
@@ -592,6 +616,26 @@ ipcam_status_t cam_set_quality(uint8_t quality)
         LOG_D(TAG, "Quality %u -> QS=0x%02X", quality, qs);
     }
     return ret;
+}
+
+/* -----------------------------------------------------------------------
+ * cam_request_snapshot
+ * 置位拍照请求，采集任务采集到下一帧时消费该标志
+ * ----------------------------------------------------------------------- */
+void cam_request_snapshot(void)
+{
+    s_snapshot_requested = true;
+}
+
+/* -----------------------------------------------------------------------
+ * cam_set_fps
+ * 更新目标帧率，采集任务据此节流帧启动间隔
+ * ----------------------------------------------------------------------- */
+void cam_set_fps(uint8_t fps)
+{
+    if (fps < 1U || fps > 30U) return;
+    s_cam.config.target_fps = fps;
+    LOG_I(TAG, "Target FPS -> %u", fps);
 }
 
 /* -----------------------------------------------------------------------

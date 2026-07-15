@@ -19,6 +19,7 @@ typedef enum {
     HEARTBEAT_NET_SEND,
     HEARTBEAT_FILE_WRITE,
     HEARTBEAT_CMD_HANDLER,
+    HEARTBEAT_SYS_MANAGER,
     HEARTBEAT_COUNT,          /**< 心跳 ID 总数，必须最后 */
 } heartbeat_id_t;
 
@@ -62,6 +63,15 @@ void sys_watchdog_task(void *param);
  * @param id  任务心跳 ID
  */
 void sys_heartbeat_update(heartbeat_id_t id);
+
+/**
+ * @brief 刷新当前正在运行任务的心跳（用于长耗时阻塞操作内部）
+ *
+ * 在网络重连、AT 指令等待等可能超过 HEARTBEAT_TIMEOUT_MS 的合法长
+ * 操作循环中周期调用，防止任务被误判为挂起而触发软复位/看门狗复位。
+ * 依据当前任务句柄自动反查心跳 ID，若当前任务未注册过心跳则无操作。
+ */
+void sys_heartbeat_kick(void);
 
 /**
  * @brief 获取当前系统状态快照

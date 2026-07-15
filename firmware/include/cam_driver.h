@@ -97,6 +97,21 @@ ipcam_status_t cam_set_resolution(cam_resolution_t res);
 ipcam_status_t cam_set_quality(uint8_t quality);
 
 /**
+ * @brief 设置目标帧率（用于采集节流）
+ * @param fps  1–30，超出范围忽略
+ */
+void cam_set_fps(uint8_t fps);
+
+/**
+ * @brief 请求将下一帧标记为拍照帧
+ *
+ * 调用后，采集任务采集到的下一帧会被标记为 is_snapshot=true，
+ * cam_get_frame 返回时该标志置位，供上层区分拍照帧与视频帧。
+ * 一次请求只影响一帧，自动清除。
+ */
+void cam_request_snapshot(void);
+
+/**
  * @brief 获取累计丢帧计数
  */
 uint32_t cam_get_drop_count(void);

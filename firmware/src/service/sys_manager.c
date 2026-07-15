@@ -29,6 +29,10 @@
 /** 各任务最后一次心跳时间戳（ms） */
 static volatile uint32_t s_heartbeat_ts[HEARTBEAT_COUNT];
 
+/** 各心跳 ID 对应的任务句柄（在首次 sys_heartbeat_update 时自动记录），
+ *  供 sys_heartbeat_kick 根据当前运行任务反查心跳 ID */
+static TaskHandle_t s_heartbeat_task[HEARTBEAT_COUNT];
+
 /** Drop_Counter（原子操作） */
 static volatile uint32_t s_drop_counter = 0U;
 
@@ -69,6 +73,7 @@ static void wdog_init(void)
 ipcam_status_t sys_manager_init(void)
 {
     memset((void *)s_heartbeat_ts, 0, sizeof(s_heartbeat_ts));
+    memset(s_heartbeat_task, 0, sizeof(s_heartbeat_task));
     s_drop_counter  = 0U;
     s_boot_tick_ms  = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
@@ -82,6 +87,18 @@ ipcam_status_t sys_manager_init(void)
 
 /* -----------------------------------------------------------------------
  * sys_watchdog_task（最高优先级，独立任务）
+ *
+ * 关键安全设计：本任务本身不作为"系统存活"的证明。
+ * 只有当所有受监控任务（含 sys_manager_task 自身）的心跳都在
+ * HEARTBEAT_TIMEOUT_MS 内更新过，才喂狗；否则任由硬件看门狗在
+ * WDG_TIMEOUT_MS 后触发复位。
+ *
+ * 若不做此检查，一旦 sys_manager_task 死锁/挂起，其内部的软件心跳
+ * 超时检测（会调用 sys_soft_reset）将永远不会执行，而本任务若仍
+ * 无条件喂狗，硬件看门狗也将永远不会触发——系统会挂死且无法自愈。
+ *
+ * 心跳时间戳为 0 表示任务尚未上报过第一次心跳（例如启动阶段某任务
+ * 仍在执行耗时较长的初始化），视为正常，不因此判定任务已死。
  * ----------------------------------------------------------------------- */
 void sys_watchdog_task(void *param)
 {
@@ -89,7 +106,26 @@ void sys_watchdog_task(void *param)
     const TickType_t period = pdMS_TO_TICKS(WDG_FEED_INTERVAL_MS);
 
     for (;;) {
-        WDOG_Refresh(WDOG);
+        uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        bool all_alive = true;
+
+        for (int i = 0; i < (int)HEARTBEAT_COUNT; i++) {
+            uint32_t last_ts = s_heartbeat_ts[i];
+            /* last_ts == 0 表示任务尚未上报过第一次心跳（例如 task_net_send
+             * 在首次 net_connect() 完成前），与 sys_manager_task 中的软件检测
+             * 保持一致的容忍策略，避免启动阶段被误判为任务已死 */
+            if (last_ts != 0U && (now_ms - last_ts) > HEARTBEAT_TIMEOUT_MS) {
+                all_alive = false;
+                break;
+            }
+        }
+
+        if (all_alive) {
+            WDOG_Refresh(WDOG);
+        }
+        /* all_alive == false 时故意不喂狗，让硬件看门狗在
+         * WDG_TIMEOUT_MS 后强制复位系统（最后一道防线） */
+
         vTaskDelay(period);
     }
 }
@@ -110,6 +146,9 @@ void sys_manager_task(void *param)
 
     for (;;) {
         uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+
+        /* 上报自身心跳，供 sys_watchdog_task 判断系统整体存活 */
+        sys_heartbeat_update(HEARTBEAT_SYS_MANAGER);
 
         /* --- 检查各任务心跳 --- */
         for (int i = 0; i < (int)HEARTBEAT_COUNT; i++) {
@@ -164,7 +203,30 @@ void sys_manager_task(void *param)
 void sys_heartbeat_update(heartbeat_id_t id)
 {
     if (id < HEARTBEAT_COUNT) {
-        s_heartbeat_ts[id] = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        s_heartbeat_ts[id]   = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        /* 记录调用任务句柄，供 sys_heartbeat_kick 反查 */
+        s_heartbeat_task[id] = xTaskGetCurrentTaskHandle();
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * sys_heartbeat_kick
+ * 供长时间阻塞操作（如网络重连、AT 指令等待）在其内部循环中调用，
+ * 刷新“当前正在运行的任务”的心跳，避免任务在合法的长耗时操作中
+ * 被心跳监控/看门狗误判为死亡而触发复位。
+ *
+ * 通过 xTaskGetCurrentTaskHandle 反查心跳 ID，只刷新真正在执行该操作
+ * 的任务，不会误刷其他任务的心跳（避免掩盖真实的任务挂起）。
+ * ----------------------------------------------------------------------- */
+void sys_heartbeat_kick(void)
+{
+    TaskHandle_t cur = xTaskGetCurrentTaskHandle();
+    uint32_t now_ms  = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    for (int i = 0; i < (int)HEARTBEAT_COUNT; i++) {
+        if (s_heartbeat_task[i] == cur) {
+            s_heartbeat_ts[i] = now_ms;
+            return;
+        }
     }
 }
 

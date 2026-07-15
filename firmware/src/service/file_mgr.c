@@ -48,7 +48,7 @@ typedef struct {
     bool     sd_available;
     bool     recording;
     FIL      rec_file;
-    char     rec_filename[FM_FILENAME_MAX_LEN];
+    char     rec_filename[FM_PATH_MAX_LEN];
     uint64_t rec_file_size;
     uint32_t rec_seq;
     uint32_t sync_counter;    /**< 帧写入同步计数，每 N 帧 f_sync 一次 */
@@ -242,10 +242,10 @@ ipcam_status_t fm_start_recording(void)
     char ts[20];
     get_timestamp_str(ts, sizeof(ts));
     if (s_fm.rec_seq > 0U) {
-        snprintf(s_fm.rec_filename, FM_FILENAME_MAX_LEN,
+        snprintf(s_fm.rec_filename, FM_PATH_MAX_LEN,
                  "0:/recordings/REC_%s_%02lu.mjpeg", ts, (unsigned long)s_fm.rec_seq);
     } else {
-        snprintf(s_fm.rec_filename, FM_FILENAME_MAX_LEN,
+        snprintf(s_fm.rec_filename, FM_PATH_MAX_LEN,
                  "0:/recordings/REC_%s.mjpeg", ts);
     }
     s_fm.rec_seq++;

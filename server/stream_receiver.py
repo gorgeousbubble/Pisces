@@ -55,6 +55,12 @@ last_known_status: dict = {
 # 等待拍照结果的 Future（由 snapshot API 设置，由接收器 resolve）
 snapshot_future: Optional[asyncio.Future] = None
 
+# 当前活跃连接的世代号，用于多连接竞态判断：
+# 每个新连接进入时分配一个递增 ID，只有仍是"当前世代"的连接
+# 才允许在断开时清空 mcu_connected/mcu_writer，避免旧连接的
+# 延迟 cleanup 覆盖掉新连接已经建立好的状态。
+_connection_generation: int = 0
+
 
 # ---------------------------------------------------------------------------
 # 帧广播
@@ -206,10 +212,12 @@ async def _handle_mcu_connection(
     writer: asyncio.StreamWriter,
 ) -> None:
     global mcu_connected, mcu_writer, mcu_last_seen, last_known_status
+    global _connection_generation
 
     peer = writer.get_extra_info("peername")
     logger.info("MCU connected from %s", peer)
-
+    _connection_generation += 1
+    my_generation = _connection_generation
     mcu_connected = True
     mcu_writer    = writer
     mcu_last_seen = time.monotonic()
@@ -294,13 +302,12 @@ async def _handle_mcu_connection(
                 body = await asyncio.wait_for(
                     reader.readexactly(content_length), timeout=5.0
                 )
-                # HMAC 验证
+                # HMAC 验证（签名不含 body，与 MCU net_auth_sign 一致）
                 from api.auth_hmac import verify_mcu_request
                 ok, reason = verify_mcu_request(
                     "POST", "/status",
                     headers.get("x-timestamp"),
                     headers.get("x-hmac-sha256"),
-                    body,
                 )
                 if not ok:
                     logger.warning("Status report HMAC failed: %s", reason)
@@ -314,6 +321,8 @@ async def _handle_mcu_connection(
                         )
                         await models.insert_status_log(status)
                         logger.debug("MCU status updated: fps=%s", status.get("fps"))
+                        # 状态上报也算 MCU 活动，刷新心跳（否则纯状态连接永不刷新）
+                        mcu_last_seen = time.monotonic()
 
         else:
             # 未知请求，读取并丢弃
@@ -327,9 +336,13 @@ async def _handle_mcu_connection(
     except Exception as e:
         logger.error("MCU connection error from %s: %s", peer, e)
     finally:
-        mcu_connected = False
-        mcu_writer    = None
-        last_known_status["mcu_online"] = False
+        # 仅当本连接仍是当前世代（未被更新的连接取代）时，
+        # 才清空全局连接状态，避免旧连接的延迟 cleanup
+        # 覆盖新连接已经建立好的 mcu_connected/mcu_writer
+        if my_generation == _connection_generation:
+            mcu_connected = False
+            mcu_writer    = None
+            last_known_status["mcu_online"] = False
         try:
             writer.close()
             await writer.wait_closed()
@@ -365,16 +378,26 @@ async def send_command_to_mcu(cmd: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 async def heartbeat_monitor() -> None:
-    """每秒检查 MCU 心跳，超时则标记为离线。"""
+    """每秒检查 MCU 心跳，超时则标记离线并关闭连接。"""
+    global mcu_connected, mcu_writer
     while True:
         await asyncio.sleep(1.0)
         if mcu_connected:
             elapsed = time.monotonic() - mcu_last_seen
             if elapsed > config.MCU_HEARTBEAT_TIMEOUT_S:
                 logger.warning(
-                    "MCU heartbeat timeout (%.1fs), marking offline", elapsed
+                    "MCU heartbeat timeout (%.1fs), marking offline and closing", elapsed
                 )
+                mcu_connected = False
                 last_known_status["mcu_online"] = False
+                # 关闭陷入停滞但未断开的连接，释放资源
+                w = mcu_writer
+                mcu_writer = None
+                if w is not None:
+                    try:
+                        w.close()
+                    except Exception:
+                        pass
 
 
 # ---------------------------------------------------------------------------

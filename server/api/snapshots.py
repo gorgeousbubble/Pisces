@@ -28,6 +28,12 @@ from api.auth import require_auth
 logger = logging.getLogger("api.snapshots")
 router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
 
+# 拍照串行化锁：stream_receiver.snapshot_future 是全局单例，
+# 若两个请求并发，后者会覆盖前者的 Future，导致 MCU 返回的照片
+# resolve 到错误的请求，前一个请求误超时。用锁保证同一时刻只有一个
+# 拍照请求在等待 MCU 响应。
+_snapshot_lock = asyncio.Lock()
+
 
 @router.post(
     "/snapshot",
@@ -44,41 +50,50 @@ async def take_snapshot(
             detail="Camera is offline. MCU not connected.",
         )
 
-    # 创建 Future，等待 MCU 返回照片数据
-    loop = asyncio.get_event_loop()
-    future: asyncio.Future = loop.create_future()
-    stream_receiver.snapshot_future = future
+    # 串行化：整个 Future 生命周期（创建→发命令→等结果）在锁内，
+    # 保证并发请求排队执行，互不覆盖 snapshot_future
+    async with _snapshot_lock:
+        # 等待锁期间 MCU 可能已掉线，重新确认
+        if not stream_receiver.mcu_connected:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Camera is offline. MCU not connected.",
+            )
 
-    # 向 MCU 发送拍照命令
-    cmd = {
-        "cmd": "snapshot",
-        "quality": req.quality,
-        "width": req.width,
-        "height": req.height,
-    }
-    sent = await stream_receiver.send_command_to_mcu(cmd)
-    if not sent:
-        stream_receiver.snapshot_future = None
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Failed to send snapshot command to MCU",
-        )
+        # 创建 Future，等待 MCU 返回照片数据
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future = loop.create_future()
+        stream_receiver.snapshot_future = future
 
-    # 等待 MCU 返回照片（超时 SNAPSHOT_TIMEOUT_S 秒）
-    try:
-        jpeg_data, sd_failed = await asyncio.wait_for(
-            future, timeout=config.SNAPSHOT_TIMEOUT_S
-        )
-    except asyncio.TimeoutError:
-        stream_receiver.snapshot_future = None
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail=f"MCU did not respond within {config.SNAPSHOT_TIMEOUT_S}s",
-        )
-    finally:
-        stream_receiver.snapshot_future = None
+        # 向 MCU 发送拍照命令
+        cmd = {
+            "cmd": "snapshot",
+            "quality": req.quality,
+            "width": req.width,
+            "height": req.height,
+        }
+        sent = await stream_receiver.send_command_to_mcu(cmd)
+        if not sent:
+            stream_receiver.snapshot_future = None
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failed to send snapshot command to MCU",
+            )
 
-    # 生成文件名并保存到服务器本地
+        # 等待 MCU 返回照片（超时 SNAPSHOT_TIMEOUT_S 秒）
+        try:
+            jpeg_data, sd_failed = await asyncio.wait_for(
+                future, timeout=config.SNAPSHOT_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail=f"MCU did not respond within {config.SNAPSHOT_TIMEOUT_S}s",
+            )
+        finally:
+            stream_receiver.snapshot_future = None
+
+    # 生成文件名并保存到服务器本地（锁外执行，缩短持锁时间）
     now = datetime.now(timezone.utc)
     filename = f"SNAP_{now.strftime('%Y%m%d_%H%M%S')}.jpg"
     file_path = config.SNAPSHOTS_DIR / filename
