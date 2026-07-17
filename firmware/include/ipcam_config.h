@@ -38,8 +38,14 @@
 #define IPCAM_CAM_TIMEOUT_FRAMES      10U      /**< 连续超时帧数触发重初始化 */
 #define IPCAM_CAM_REINIT_MAX          3U       /**< 摄像头重初始化最大次数 */
 
-#define IPCAM_SNAPSHOT_TIMEOUT_MS     3000U    /**< 拍照命令超时 3s */
+#define IPCAM_SNAPSHOT_TIMEOUT_MS     3000U    /**< 单次拍照等待帧超时 3s */
 #define IPCAM_STATUS_REPORT_INTERVAL_MS 10000U /**< 状态上报间隔 10s */
+
+/* 拍照兜底：720P 高质量 JPEG 可能超出 IPCAM_JPEG_BUF_SIZE 被丢弃导致超时，
+ * 逐档降低质量重试以减小 JPEG 体积（每档 -QUALITY_STEP，直到 MIN_QUALITY）*/
+#define IPCAM_SNAPSHOT_MAX_ATTEMPTS   3U       /**< 拍照最大尝试次数 */
+#define IPCAM_SNAPSHOT_MIN_QUALITY    55U      /**< 降质量重试的下限（须 >=50）*/
+#define IPCAM_SNAPSHOT_QUALITY_STEP   15U      /**< 每次重试降低的质量档位 */
 
 /* -----------------------------------------------------------------------
  * 运行时配置结构体

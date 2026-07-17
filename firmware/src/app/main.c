@@ -290,37 +290,66 @@ static void task_cmd_handler(void *param)
 
         switch (cmd.type) {
         case CMD_SNAPSHOT: {
-            /* 切换到高分辨率 */
-            uint8_t  q = (cmd.quality >= 80U)  ? cmd.quality : 80U;
+            /* 拍照初始质量：不低于 80 以保证画质 */
+            uint8_t q = (cmd.quality >= 80U) ? cmd.quality : 80U;
 
             /* 拍照上传（net_send_snapshot）可能长时间阻塞，
              * 期间让网络层刷新本任务心跳，避免被误判死亡触发复位 */
             net_set_active_heartbeat(HEARTBEAT_CMD_HANDLER);
 
             cam_set_resolution(CAM_RES_HD720P);
-            cam_set_quality(q);
 
-            /* 请求将下一帧标记为拍照帧，采集任务会通过 s_snapshot_sem 通知 */
-            cam_request_snapshot();
+            bool captured = false;
+            for (uint32_t attempt = 0U;
+                 attempt < IPCAM_SNAPSHOT_MAX_ATTEMPTS && !captured;
+                 attempt++) {
 
-            /* 等待拍照帧（超时 3 秒） */
-            bool sd_failed = false;
-            if (xSemaphoreTake(s_snapshot_sem, pdMS_TO_TICKS(IPCAM_SNAPSHOT_TIMEOUT_MS)) == pdTRUE) {
-                /* 保存到 SD 卡 */
-                char path[FM_FILENAME_MAX_LEN];
-                ipcam_status_t fm_ret = fm_save_snapshot(
-                    s_snapshot_frame.data, s_snapshot_frame.size, path);
-                if (fm_ret != IPCAM_OK) {
-                    LOG_W(TAG, "Snapshot SD save failed: %d", (int)fm_ret);
-                    sd_failed = true;
+                cam_set_quality(q);
+                /* 请求将下一帧标记为拍照帧，采集任务会通过 s_snapshot_sem 通知 */
+                cam_request_snapshot();
+
+                /* 分段等待拍照帧：每 500ms 刷新一次心跳，避免整段等待
+                 * （最坏 MAX_ATTEMPTS×TIMEOUT）被 sys_manager 误判任务死亡 */
+                bool got = false;
+                uint32_t waited = 0U;
+                while (waited < IPCAM_SNAPSHOT_TIMEOUT_MS) {
+                    sys_heartbeat_update(HEARTBEAT_CMD_HANDLER);
+                    if (xSemaphoreTake(s_snapshot_sem, pdMS_TO_TICKS(500U)) == pdTRUE) {
+                        got = true;
+                        break;
+                    }
+                    waited += 500U;
                 }
-                /* 上传到服务器 */
-                net_send_snapshot(s_snapshot_frame.data, s_snapshot_frame.size, sd_failed);
 
-                /* 释放拍照帧引用，允许采集侧复用该缓冲区 */
-                cam_release_frame(&s_snapshot_frame);
-            } else {
-                LOG_W(TAG, "Snapshot timeout (no frame in %ums)", IPCAM_SNAPSHOT_TIMEOUT_MS);
+                if (got) {
+                    captured = true;
+                    bool sd_failed = false;
+                    /* 保存到 SD 卡 */
+                    char path[FM_FILENAME_MAX_LEN];
+                    ipcam_status_t fm_ret = fm_save_snapshot(
+                        s_snapshot_frame.data, s_snapshot_frame.size, path);
+                    if (fm_ret != IPCAM_OK) {
+                        LOG_W(TAG, "Snapshot SD save failed: %d", (int)fm_ret);
+                        sd_failed = true;
+                    }
+                    /* 上传到服务器 */
+                    net_send_snapshot(s_snapshot_frame.data, s_snapshot_frame.size, sd_failed);
+
+                    /* 释放拍照帧引用，允许采集侧复用该缓冲区 */
+                    cam_release_frame(&s_snapshot_frame);
+                } else if (q > IPCAM_SNAPSHOT_MIN_QUALITY) {
+                    /* 超时最可能是 720P JPEG 超出帧缓冲被丢弃，降质量减小体积后重试 */
+                    uint8_t new_q =
+                        (q >= IPCAM_SNAPSHOT_MIN_QUALITY + IPCAM_SNAPSHOT_QUALITY_STEP)
+                        ? (uint8_t)(q - IPCAM_SNAPSHOT_QUALITY_STEP)
+                        : IPCAM_SNAPSHOT_MIN_QUALITY;
+                    LOG_W(TAG, "Snapshot timeout (q=%u, likely buffer overflow), retry q=%u",
+                          q, new_q);
+                    q = new_q;
+                } else {
+                    LOG_W(TAG, "Snapshot failed after %lu attempts (min quality reached)",
+                          (unsigned long)(attempt + 1U));
+                }
             }
 
             /* 恢复 VGA 模式 */
