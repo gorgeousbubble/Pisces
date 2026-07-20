@@ -29,6 +29,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include <string.h>
+#include <stdint.h>   /* uintptr_t */
 
 /* -----------------------------------------------------------------------
  * 常量
@@ -56,6 +57,16 @@ static sdhc_adma2_descriptor_t s_adma2_table[ADMA2_TABLE_WORDS];
 #else
 static sdhc_adma2_descriptor_t s_adma2_table[ADMA2_TABLE_WORDS]
     __attribute__((aligned(4)));
+#endif
+
+/* 4 字节对齐的单扇区中转缓冲：SDHC ADMA2 要求传输地址按字对齐。
+ * FatFs 传入的 buff（尤其内部 FAT/目录窗口缓冲）可能非 4 字节对齐，
+ * 非对齐时逐扇区经由本缓冲中转，避免 DMA 传输失败或静默数据损坏。 */
+#if defined(__ICCARM__)
+#pragma data_alignment = 4
+static uint8_t s_bounce[SD_SECTOR_SIZE];
+#else
+static uint8_t s_bounce[SD_SECTOR_SIZE] __attribute__((aligned(4)));
 #endif
 
 /* -----------------------------------------------------------------------
@@ -155,6 +166,49 @@ static bool sd_card_init(void)
 }
 
 /* -----------------------------------------------------------------------
+ * 私有：底层块传输（缓冲区 buf 必须 4 字节对齐）
+ * is_write=true 为写，false 为读；sector 为起始扇区，count 为块数
+ * ----------------------------------------------------------------------- */
+static DRESULT sd_xfer_aligned(bool is_write, uint8_t *buf,
+                               uint32_t sector, UINT count)
+{
+    uint32_t addr = s_sd.high_capacity ? sector
+                                       : sector * SD_SECTOR_SIZE;
+
+    sdhc_data_t data;
+    memset(&data, 0, sizeof(data));
+    data.enableAutoCommand12 = (count > 1U);
+    data.enableIgnoreError   = false;
+    data.blockSize           = SD_SECTOR_SIZE;
+    data.blockCount          = (uint32_t)count;
+    if (is_write) {
+        data.rxData = NULL;
+        data.txData = (const uint32_t *)(const void *)buf;
+    } else {
+        data.rxData = (uint32_t *)(void *)buf;
+        data.txData = NULL;
+    }
+
+    sdhc_command_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    if (is_write) {
+        cmd.index = (count == 1U) ? 24U : 25U;
+    } else {
+        cmd.index = (count == 1U) ? 17U : 18U;
+    }
+    cmd.argument     = addr;
+    cmd.responseType = kSDHC_ResponseTypeR1;
+
+    sdhc_transfer_t xfer;
+    memset(&xfer, 0, sizeof(xfer));
+    xfer.command = &cmd;
+    xfer.data    = &data;
+
+    return (SDHC_TransferBlocking(SD_SDHC, s_adma2_table, ADMA2_TABLE_WORDS, &xfer)
+            == kStatus_Success) ? RES_OK : RES_ERROR;
+}
+
+/* -----------------------------------------------------------------------
  * disk_initialize
  * ----------------------------------------------------------------------- */
 DSTATUS disk_initialize(BYTE pdrv)
@@ -212,32 +266,16 @@ DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
     if (pdrv != 0U || !s_sd.initialized) return RES_NOTRDY;
     if (buff == NULL || count == 0U)     return RES_PARERR;
 
-    uint32_t addr = s_sd.high_capacity ? (uint32_t)sector
-                                       : (uint32_t)sector * SD_SECTOR_SIZE;
+    /* buff 4 字节对齐：走多块快速路径 */
+    if (((uintptr_t)buff & 3U) == 0U) {
+        return sd_xfer_aligned(false, buff, (uint32_t)sector, count);
+    }
 
-    sdhc_data_t data;
-    memset(&data, 0, sizeof(data));
-    data.enableAutoCommand12 = (count > 1U);
-    data.enableIgnoreError   = false;
-    data.blockSize           = SD_SECTOR_SIZE;
-    data.blockCount          = (uint32_t)count;
-    data.rxData              = (uint32_t *)(void *)buff;
-    data.txData              = NULL;
-
-    sdhc_command_t cmd;
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.index        = (count == 1U) ? 17U : 18U;
-    cmd.argument     = addr;
-    cmd.responseType = kSDHC_ResponseTypeR1;
-
-    sdhc_transfer_t xfer;
-    memset(&xfer, 0, sizeof(xfer));
-    xfer.command = &cmd;
-    xfer.data    = &data;
-
-    if (SDHC_TransferBlocking(SD_SDHC, s_adma2_table, ADMA2_TABLE_WORDS, &xfer)
-            != kStatus_Success) {
-        return RES_ERROR;
+    /* buff 非对齐：逐扇区经对齐中转缓冲，避免 ADMA2 非对齐传输错误 */
+    for (UINT i = 0U; i < count; i++) {
+        DRESULT r = sd_xfer_aligned(false, s_bounce, (uint32_t)sector + i, 1U);
+        if (r != RES_OK) return r;
+        memcpy(buff + (size_t)i * SD_SECTOR_SIZE, s_bounce, SD_SECTOR_SIZE);
     }
     return RES_OK;
 }
@@ -250,32 +288,17 @@ DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
     if (pdrv != 0U || !s_sd.initialized) return RES_NOTRDY;
     if (buff == NULL || count == 0U)     return RES_PARERR;
 
-    uint32_t addr = s_sd.high_capacity ? (uint32_t)sector
-                                       : (uint32_t)sector * SD_SECTOR_SIZE;
+    /* buff 4 字节对齐：走多块快速路径 */
+    if (((uintptr_t)buff & 3U) == 0U) {
+        return sd_xfer_aligned(true, (uint8_t *)(uintptr_t)buff,
+                               (uint32_t)sector, count);
+    }
 
-    sdhc_data_t data;
-    memset(&data, 0, sizeof(data));
-    data.enableAutoCommand12 = (count > 1U);
-    data.enableIgnoreError   = false;
-    data.blockSize           = SD_SECTOR_SIZE;
-    data.blockCount          = (uint32_t)count;
-    data.rxData              = NULL;
-    data.txData              = (const uint32_t *)(const void *)buff;
-
-    sdhc_command_t cmd;
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.index        = (count == 1U) ? 24U : 25U;
-    cmd.argument     = addr;
-    cmd.responseType = kSDHC_ResponseTypeR1;
-
-    sdhc_transfer_t xfer;
-    memset(&xfer, 0, sizeof(xfer));
-    xfer.command = &cmd;
-    xfer.data    = &data;
-
-    if (SDHC_TransferBlocking(SD_SDHC, s_adma2_table, ADMA2_TABLE_WORDS, &xfer)
-            != kStatus_Success) {
-        return RES_ERROR;
+    /* buff 非对齐：逐扇区经对齐中转缓冲写入 */
+    for (UINT i = 0U; i < count; i++) {
+        memcpy(s_bounce, buff + (size_t)i * SD_SECTOR_SIZE, SD_SECTOR_SIZE);
+        DRESULT r = sd_xfer_aligned(true, s_bounce, (uint32_t)sector + i, 1U);
+        if (r != RES_OK) return r;
     }
     return RES_OK;
 }
