@@ -20,18 +20,24 @@
 #if FF_FS_REENTRANT  /* 仅在启用重入保护时编译 */
 
 /*
+ * 卷互斥锁句柄表。
+ * 按 FatFs R0.15 约定，互斥锁句柄由 OS 依赖层（本文件）自行维护，
+ * ff.c 仅通过 ff_mutex_take/give(vol) 间接访问，不导出该符号。
+ * 因此这里必须在本编译单元内定义为 static，
+ * 原先用 `extern FF_SYNC_t Mutex[]` 引用会在链接期报 undefined symbol。
+ * 索引 0..FF_VOLUMES-1 为各卷，FF_VOLUMES 处为系统级锁（f_mkfs 等使用）。
+ */
+static FF_SYNC_t s_ff_mutex[FF_VOLUMES + 1];
+
+/*
  * ff_mutex_create
  * 为卷 vol 创建一个互斥锁，返回 1 表示成功，0 表示失败。
  * FatFs 在初始化时（f_mount）调用此函数。
  */
 int ff_mutex_create(int vol)
 {
-    /* Mutex[vol] 是 FatFs 内部维护的 FF_SYNC_t 数组元素 */
-    /* 通过 FatFs 内部宏 Mutex[vol] 访问，此处直接操作 */
-    extern FF_SYNC_t Mutex[FF_VOLUMES + 1];
-
-    Mutex[vol] = xSemaphoreCreateMutex();
-    return (Mutex[vol] != NULL) ? 1 : 0;
+    s_ff_mutex[vol] = xSemaphoreCreateMutex();
+    return (s_ff_mutex[vol] != NULL) ? 1 : 0;
 }
 
 /*
@@ -41,11 +47,9 @@ int ff_mutex_create(int vol)
  */
 void ff_mutex_delete(int vol)
 {
-    extern FF_SYNC_t Mutex[FF_VOLUMES + 1];
-
-    if (Mutex[vol] != NULL) {
-        vSemaphoreDelete(Mutex[vol]);
-        Mutex[vol] = NULL;
+    if (s_ff_mutex[vol] != NULL) {
+        vSemaphoreDelete(s_ff_mutex[vol]);
+        s_ff_mutex[vol] = NULL;
     }
 }
 
@@ -56,10 +60,8 @@ void ff_mutex_delete(int vol)
  */
 int ff_mutex_take(int vol)
 {
-    extern FF_SYNC_t Mutex[FF_VOLUMES + 1];
-
-    if (Mutex[vol] == NULL) return 0;
-    return (xSemaphoreTake(Mutex[vol], FF_FS_TIMEOUT) == pdTRUE) ? 1 : 0;
+    if (s_ff_mutex[vol] == NULL) return 0;
+    return (xSemaphoreTake(s_ff_mutex[vol], FF_FS_TIMEOUT) == pdTRUE) ? 1 : 0;
 }
 
 /*
@@ -68,10 +70,8 @@ int ff_mutex_take(int vol)
  */
 void ff_mutex_give(int vol)
 {
-    extern FF_SYNC_t Mutex[FF_VOLUMES + 1];
-
-    if (Mutex[vol] != NULL) {
-        xSemaphoreGive(Mutex[vol]);
+    if (s_ff_mutex[vol] != NULL) {
+        xSemaphoreGive(s_ff_mutex[vol]);
     }
 }
 

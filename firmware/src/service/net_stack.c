@@ -260,17 +260,24 @@ static bool at_wait_response(const char *expected,
                 return false;
             }
 
-            /* 检查是否为服务器下发的命令（以 '{' 开头的 JSON） */
-            if (line[0] == '{' && line_pos > 2U) {
-                if (s_cmd_mutex != NULL &&
-                    xSemaphoreTake(s_cmd_mutex, pdMS_TO_TICKS(50U)) == pdTRUE) {
-                    strncpy(s_cmd_buf, line, IPCAM_CMD_BUF_SIZE - 1U);
-                    s_cmd_buf[IPCAM_CMD_BUF_SIZE - 1U] = '\0';
-                    s_cmd_pending = true;
-                    xSemaphoreGive(s_cmd_mutex);
-                    LOG_D(TAG, "Command received: %s", s_cmd_buf);
-                } else {
-                    LOG_W(TAG, "Command buffer busy, command dropped");
+            /* 检查是否为服务器下发的命令 JSON。
+             * 从行内定位 '{' 起始，兼容两种情形：
+             *   - 裸 JSON 行： {"cmd":...}
+             *   - ESP 普通模式带前缀： +IPD,<len>:{"cmd":...}
+             * 并要求包含 "cmd" 字段，避免把其它 JSON/AT 响应误判为命令。 */
+            {
+                char *json_start = strchr(line, '{');
+                if (json_start != NULL && strstr(json_start, "\"cmd\"") != NULL) {
+                    if (s_cmd_mutex != NULL &&
+                        xSemaphoreTake(s_cmd_mutex, pdMS_TO_TICKS(50U)) == pdTRUE) {
+                        strncpy(s_cmd_buf, json_start, IPCAM_CMD_BUF_SIZE - 1U);
+                        s_cmd_buf[IPCAM_CMD_BUF_SIZE - 1U] = '\0';
+                        s_cmd_pending = true;
+                        xSemaphoreGive(s_cmd_mutex);
+                        LOG_D(TAG, "Command received: %s", s_cmd_buf);
+                    } else {
+                        LOG_W(TAG, "Command buffer busy, command dropped");
+                    }
                 }
             }
 
