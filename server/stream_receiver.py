@@ -127,6 +127,14 @@ async def _parse_mjpeg_stream(reader: asyncio.StreamReader) -> None:
 
         buf += chunk
 
+        # 缓冲总量保护：超过上限判定流损坏，断开连接防止内存耗尽
+        if len(buf) > config.MAX_STREAM_BUF_SIZE:
+            logger.warning(
+                "MCU stream buffer exceeded %d bytes without a complete frame, "
+                "closing connection", config.MAX_STREAM_BUF_SIZE
+            )
+            break
+
         # 持续从缓冲区中提取完整帧
         while True:
             # 查找帧边界
@@ -163,6 +171,13 @@ async def _parse_mjpeg_stream(reader: asyncio.StreamReader) -> None:
                 jpeg_data = buf[soi: eoi + 2]
                 buf = buf[eoi + 2:]
             else:
+                # 单帧上限保护：异常大的 Content-Length 直接断开，避免无限等待/内存耗尽
+                if content_length > config.MAX_FRAME_SIZE:
+                    logger.warning(
+                        "Frame Content-Length %d exceeds limit %d, closing connection",
+                        content_length, config.MAX_FRAME_SIZE
+                    )
+                    return
                 if len(buf) < header_end + content_length:
                     break  # 数据不足，等待
                 jpeg_data = buf[header_end: header_end + content_length]
@@ -277,6 +292,12 @@ async def _handle_mcu_connection(
             except ValueError:
                 logger.warning("Snapshot: invalid Content-Length header")
                 return
+            if content_length > config.MAX_SNAPSHOT_SIZE:
+                logger.warning(
+                    "Snapshot Content-Length %d exceeds limit %d, rejecting",
+                    content_length, config.MAX_SNAPSHOT_SIZE
+                )
+                return
             sd_failed_str  = headers.get("x-sd-failed", "false").lower()
             sd_failed      = sd_failed_str == "true"
 
@@ -297,7 +318,17 @@ async def _handle_mcu_connection(
                     k, v = line.decode("utf-8", errors="ignore").split(":", 1)
                     headers[k.strip().lower()] = v.strip()
 
-            content_length = int(headers.get("content-length", "0"))
+            try:
+                content_length = int(headers.get("content-length", "0"))
+            except ValueError:
+                logger.warning("Status: invalid Content-Length header")
+                return
+            if content_length > config.MAX_STATUS_BODY_SIZE:
+                logger.warning(
+                    "Status Content-Length %d exceeds limit %d, rejecting",
+                    content_length, config.MAX_STATUS_BODY_SIZE
+                )
+                return
             if content_length > 0:
                 body = await asyncio.wait_for(
                     reader.readexactly(content_length), timeout=5.0

@@ -53,6 +53,18 @@ MAX_STREAM_CLIENTS: int = _env_int("MAX_STREAM_CLIENTS", 10)
 FRAME_QUEUE_SIZE: int = _env_int("FRAME_QUEUE_SIZE", 5)
 
 # ---------------------------------------------------------------------------
+# 传输大小上限（防止损坏/恶意数据导致内存耗尽）
+# ---------------------------------------------------------------------------
+# 单帧 MJPEG 上限（MCU 720P JPEG 一般 <100KB，留足余量）
+MAX_FRAME_SIZE: int = _env_int("MAX_FRAME_SIZE", 512 * 1024)
+# MJPEG 解析缓冲总上限：超过则判定流损坏并断开连接
+MAX_STREAM_BUF_SIZE: int = _env_int("MAX_STREAM_BUF_SIZE", 1024 * 1024)
+# 拍照上传上限
+MAX_SNAPSHOT_SIZE: int = _env_int("MAX_SNAPSHOT_SIZE", 2 * 1024 * 1024)
+# 状态 JSON 上限
+MAX_STATUS_BODY_SIZE: int = _env_int("MAX_STATUS_BODY_SIZE", 8 * 1024)
+
+# ---------------------------------------------------------------------------
 # 存储路径
 # ---------------------------------------------------------------------------
 STORAGE_PATH: Path = Path(_env("STORAGE_PATH", "/var/ipcam"))
