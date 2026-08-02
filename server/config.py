@@ -85,6 +85,16 @@ AUTH_USERNAME: str  = _env("AUTH_USERNAME", "admin")
 AUTH_PASSWORD: str  = _env("AUTH_PASSWORD", "changeme")  # 生产环境必须通过环境变量覆盖
 
 # ---------------------------------------------------------------------------
+# CORS 允许的源（逗号分隔）
+# 默认 "*"（局域网便利）；外网部署应设为具体域名白名单。
+# 注意：为安全起见 allow_credentials 固定为 False——"*" 与凭证共存会让任意
+# 站点带凭证跨源访问。Basic Auth 通过 Authorization 头工作，不依赖该开关。
+# ---------------------------------------------------------------------------
+CORS_ALLOW_ORIGINS: list = [
+    o.strip() for o in _env("CORS_ALLOW_ORIGINS", "*").split(",") if o.strip()
+]
+
+# ---------------------------------------------------------------------------
 # 拍照超时
 # ---------------------------------------------------------------------------
 SNAPSHOT_TIMEOUT_S: float = float(_env("SNAPSHOT_TIMEOUT_S", "3.0"))

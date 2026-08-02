@@ -95,10 +95,12 @@ app = FastAPI(
 )
 
 # CORS（允许局域网内浏览器直接访问）
+# allow_credentials 固定 False：避免 "*" 源 + 凭证共存导致任意站点带凭证跨源访问；
+# Basic Auth 走 Authorization 头，不受此影响。外网部署请用 CORS_ALLOW_ORIGINS 限制源。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=config.CORS_ALLOW_ORIGINS,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
