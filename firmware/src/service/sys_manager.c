@@ -272,6 +272,18 @@ void sys_soft_reset(reset_reason_t reason)
  * ----------------------------------------------------------------------- */
 reset_reason_t sys_get_last_reset_reason(void)
 {
+    /* 幂等缓存：本函数在启动阶段被多处调用（main 打印 + sys_manager_init），
+     * 但读取 RFVBAT 细分原因后会清除该寄存器。若不缓存，第二次及以后调用
+     * 将读不到已清除的软复位细分原因，只能回退为通用 RESET_REASON_SOFT。
+     * 首次调用读取并缓存，后续直接返回缓存值，且 RFVBAT 只清除一次。
+     * 仅在调度器启动前的单线程阶段调用，static 缓存无并发问题。 */
+    static bool           s_reason_cached = false;
+    static reset_reason_t s_cached_reason = RESET_REASON_UNKNOWN;
+
+    if (s_reason_cached) {
+        return s_cached_reason;
+    }
+
     uint32_t src = RCM_GetPreviousResetSources(RCM);
     reset_reason_t reason = RESET_REASON_POWER_ON;
 
@@ -296,6 +308,9 @@ reset_reason_t sys_get_last_reset_reason(void)
 
     /* 清除 RFVBAT 记录，供下次识别 */
     RFVBAT->REG[0] = 0U;
+
+    s_cached_reason = reason;
+    s_reason_cached = true;
     return reason;
 }
 

@@ -627,14 +627,30 @@ done:
 
 /* -----------------------------------------------------------------------
  * net_send_snapshot
- * 上传照片到服务器（HTTP POST /snapshot）
+ * 上传照片到服务器。
+ *
+ * 复用推流 TCP 连接，将照片作为带 X-Snapshot 标记的 multipart part 发送：
+ *   --frame\r\n
+ *   Content-Type: image/jpeg\r\n
+ *   X-Snapshot: 1\r\n
+ *   X-SD-Failed: true|false\r\n
+ *   Content-Length: N\r\n
+ *   \r\n
+ *   <JPEG>
+ *
+ * 服务器在解析 multipart 流时识别 X-Snapshot，将该帧作为拍照结果处理
+ * 而非广播到视频流。认证继承自连接建立时 POST /stream 的 HMAC。
+ *
+ * 说明：MCU 单连接（AT+CIPMUX=0）无法在推流的同时另开一条 TCP 发送独立
+ * HTTP 请求；旧实现在推流连接上直接发 POST /snapshot 会被服务器当作
+ * multipart 流数据丢弃，导致拍照上传永远无法被识别。此处改为流内标记帧。
  * ----------------------------------------------------------------------- */
 ipcam_status_t net_send_snapshot(const uint8_t *jpeg, uint32_t size, bool sd_failed)
 {
     if (!s_net.initialized) return IPCAM_ERR_NOT_INIT;
     if (jpeg == NULL || size == 0U) return IPCAM_ERR_INVALID;
 
-    /* 若当前不在推流状态，尝试重连 */
+    /* 拍照帧作为流内 part 发送，必须处于推流态；否则先尝试建立连接 */
     if (s_net.state != NET_STATE_STREAMING) {
         LOG_W(TAG, "net_send_snapshot: not streaming, attempting reconnect");
         if (net_connect() != IPCAM_OK) {
@@ -646,27 +662,17 @@ ipcam_status_t net_send_snapshot(const uint8_t *jpeg, uint32_t size, bool sd_fai
         return IPCAM_ERR_BUSY;
     }
 
-    /* 构造 HTTP POST 请求（带 HMAC 认证） */
-    char http_req[384];
-    uint32_t ts_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    char hmac_hex[HMAC_HEX_LEN];
-    net_auth_sign("POST", "/snapshot", ts_ms, NULL, 0U, hmac_hex);
-
-    int hlen = snprintf(http_req, sizeof(http_req),
-        "POST /snapshot HTTP/1.1\r\n"
-        "Host: %s:%u\r\n"
+    /* 构造带拍照标记的 multipart part 头 */
+    char part_hdr[160];
+    int hlen = snprintf(part_hdr, sizeof(part_hdr),
+        "--frame\r\n"
         "Content-Type: image/jpeg\r\n"
-        "Content-Length: %lu\r\n"
+        "X-Snapshot: 1\r\n"
         "X-SD-Failed: %s\r\n"
-        "X-Timestamp: %lu\r\n"
-        "X-HMAC-SHA256: %s\r\n"
+        "Content-Length: %lu\r\n"
         "\r\n",
-        s_net.cfg.server_ip,
-        s_net.cfg.server_port,
-        (unsigned long)size,
         sd_failed ? "true" : "false",
-        (unsigned long)ts_ms,
-        hmac_hex);
+        (unsigned long)size);
 
     ipcam_status_t ret = IPCAM_OK;
 
@@ -682,7 +688,7 @@ ipcam_status_t net_send_snapshot(const uint8_t *jpeg, uint32_t size, bool sd_fai
             goto snap_done;
         }
 
-        UART_WriteBlocking(WIFI_UART, (const uint8_t *)http_req, (uint32_t)hlen);
+        UART_WriteBlocking(WIFI_UART, (const uint8_t *)part_hdr, (uint32_t)hlen);
         UART_WriteBlocking(WIFI_UART, jpeg, size);
 
         if (!at_wait_response("SEND OK", AT_SEND_TIMEOUT_MS * 3U, NULL, 0U)) {
@@ -695,13 +701,18 @@ snap_done:
     if (ret == IPCAM_OK) {
         LOG_I(TAG, "Snapshot uploaded (%lu bytes, sd_failed=%d)",
               (unsigned long)size, (int)sd_failed);
+    } else {
+        /* 发送失败，标记 TCP 断开触发重连 */
+        s_net.state = NET_STATE_WIFI_CONNECTED;
+        s_net.http_header_sent = false;
     }
     return ret;
 }
 
 /* -----------------------------------------------------------------------
  * net_send_status
- * 上报系统状态 JSON（HTTP POST /status）
+ * 上报系统状态 JSON：作为带 X-Status 标记的流内 multipart part 发送
+ * （复用推流连接，认证继承 POST /stream 的 HMAC）
  * ----------------------------------------------------------------------- */
 ipcam_status_t net_send_status(const sys_status_t *status)
 {
@@ -736,21 +747,18 @@ ipcam_status_t net_send_status(const sys_status_t *status)
         return IPCAM_ERR_BUSY;
     }
 
-    char http_req[256];
-    uint32_t ts_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    char hmac_hex[HMAC_HEX_LEN];
-    net_auth_sign("POST", "/status", ts_ms, NULL, 0U, hmac_hex);
-
-    int hlen = snprintf(http_req, sizeof(http_req),
-        "POST /status HTTP/1.1\r\n"
-        "Host: %s:%u\r\n"
+    /* 状态作为带 X-Status 标记的 multipart part 复用推流连接发送，
+     * 服务器 _parse_mjpeg_stream 识别后更新 MCU 状态而非广播。
+     * 认证继承连接建立时 POST /stream 的 HMAC，无需请求级 HMAC。
+     * 旧实现在推流连接上发独立 POST /status 会被服务器当流数据丢弃。 */
+    char part_hdr[96];
+    int hlen = snprintf(part_hdr, sizeof(part_hdr),
+        "--frame\r\n"
         "Content-Type: application/json\r\n"
+        "X-Status: 1\r\n"
         "Content-Length: %d\r\n"
-        "X-Timestamp: %lu\r\n"
-        "X-HMAC-SHA256: %s\r\n"
         "\r\n",
-        s_net.cfg.server_ip, s_net.cfg.server_port, jlen,
-        (unsigned long)ts_ms, hmac_hex);
+        jlen);
 
     ipcam_status_t ret = IPCAM_OK;
 
@@ -762,7 +770,7 @@ ipcam_status_t net_send_status(const sys_status_t *status)
         at_send(send_cmd);
 
         if (at_wait_prompt(AT_PROMPT_TIMEOUT_MS)) {
-            UART_WriteBlocking(WIFI_UART, (const uint8_t *)http_req, (uint32_t)hlen);
+            UART_WriteBlocking(WIFI_UART, (const uint8_t *)part_hdr, (uint32_t)hlen);
             UART_WriteBlocking(WIFI_UART, (const uint8_t *)json, (uint32_t)jlen);
             at_wait_response("SEND OK", AT_SEND_TIMEOUT_MS, NULL, 0U);
         } else {

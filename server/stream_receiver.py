@@ -153,14 +153,22 @@ async def _parse_mjpeg_stream(reader: asyncio.StreamReader) -> None:
             header_section = buf[boundary_pos:header_end].decode("utf-8", errors="ignore")
             header_end += 4  # 跳过 \r\n\r\n
 
-            # 解析 Content-Length
+            # 解析 part 头：Content-Length 及拍照标记
             content_length = None
+            is_snapshot = False
+            snap_sd_failed = False
             for line in header_section.splitlines():
-                if line.lower().startswith("content-length:"):
+                low = line.lower()
+                if low.startswith("content-length:"):
                     try:
                         content_length = int(line.split(":", 1)[1].strip())
                     except ValueError:
                         pass
+                elif low.startswith("x-snapshot:"):
+                    # 带 X-Snapshot 标记的 part 是拍照帧，不广播到视频流
+                    is_snapshot = True
+                elif low.startswith("x-sd-failed:"):
+                    snap_sd_failed = (line.split(":", 1)[1].strip().lower() == "true")
 
             if content_length is None:
                 # 没有 Content-Length，尝试用 JPEG SOI/EOI 定位
@@ -183,10 +191,22 @@ async def _parse_mjpeg_stream(reader: asyncio.StreamReader) -> None:
                 jpeg_data = buf[header_end: header_end + content_length]
                 buf = buf[header_end + content_length:]
 
-            if jpeg_data.startswith(JPEG_SOI):
-                _broadcast_frame(jpeg_data)
-                global mcu_last_seen
+            global mcu_last_seen
+            if is_status:
+                # 状态 part：body 是 JSON，更新 MCU 状态而非广播/拍照
+                status_obj = _parse_status_message(jpeg_data)
+                if status_obj:
+                    await _apply_mcu_status(status_obj)
                 mcu_last_seen = time.monotonic()
+            elif is_snapshot:
+                # 拍照帧：交给等待中的 snapshot Future，不广播
+                if jpeg_data.startswith(JPEG_SOI):
+                    await _handle_snapshot_response(jpeg_data, snap_sd_failed)
+                    mcu_last_seen = time.monotonic()
+            else:
+                if jpeg_data.startswith(JPEG_SOI):
+                    _broadcast_frame(jpeg_data)
+                    mcu_last_seen = time.monotonic()
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +230,20 @@ def _parse_status_message(data: bytes) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 # 拍照响应处理
 # ---------------------------------------------------------------------------
+
+async def _apply_mcu_status(status_obj: dict) -> None:
+    """更新最近已知状态并写入状态日志。
+
+    供两条路径共用：推流内的 X-Status part、以及独立 POST /status 连接。
+    """
+    last_known_status.update(status_obj)
+    last_known_status["mcu_online"] = True
+    last_known_status["last_seen"] = (
+        __import__("datetime").datetime.utcnow().isoformat() + "Z"
+    )
+    await models.insert_status_log(status_obj)
+    logger.debug("MCU status updated: fps=%s", status_obj.get("fps"))
+
 
 async def _handle_snapshot_response(jpeg_data: bytes, sd_failed: bool) -> None:
     """将拍照结果传递给等待中的 Future。"""
@@ -345,13 +379,7 @@ async def _handle_mcu_connection(
                 else:
                     status = _parse_status_message(body)
                     if status:
-                        last_known_status.update(status)
-                        last_known_status["mcu_online"] = True
-                        last_known_status["last_seen"] = (
-                            __import__("datetime").datetime.utcnow().isoformat() + "Z"
-                        )
-                        await models.insert_status_log(status)
-                        logger.debug("MCU status updated: fps=%s", status.get("fps"))
+                        await _apply_mcu_status(status)
                         # 状态上报也算 MCU 活动，刷新心跳（否则纯状态连接永不刷新）
                         mcu_last_seen = time.monotonic()
 

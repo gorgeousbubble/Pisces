@@ -8,6 +8,7 @@ MCU 通过 POST /recordings/sync 上报新录像文件信息，
   扫描 RECORDINGS_DIR 目录，将未索引的文件补录到数据库。
 """
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -122,35 +123,46 @@ async def scan_recordings() -> dict:
     if not config.RECORDINGS_DIR.exists():
         return {"scanned": 0, "added": 0}
 
-    added = 0
-    scanned = 0
-
-    async with aiosqlite.connect(config.DB_PATH) as db:
+    # 目录遍历与 stat 是阻塞式文件 I/O，offload 到线程，避免阻塞事件循环
+    # 冻结所有并发客户端（视频流/拍照/状态查询）。DB 操作仍在协程内完成。
+    def _scan_dir() -> list[tuple[str, int, float]]:
+        items: list[tuple[str, int, float]] = []
         for f in config.RECORDINGS_DIR.iterdir():
             if not f.is_file():
                 continue
             if not f.name.lower().endswith(".mjpeg"):
                 continue
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            items.append((f.name, st.st_size, st.st_mtime))
+        return items
 
-            scanned += 1
+    files = await asyncio.to_thread(_scan_dir)
+    scanned = len(files)
+    added = 0
+
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        for name, size_bytes, mtime in files:
             # 检查是否已在索引中
             cursor = await db.execute(
-                "SELECT id FROM recordings WHERE filename=?", (f.name,)
+                "SELECT id FROM recordings WHERE filename=?", (name,)
             )
             row = await cursor.fetchone()
             if row:
                 continue  # 已索引，跳过
 
-            start_time = _parse_recording_timestamp(f.name)
+            start_time = _parse_recording_timestamp(name)
             if not start_time:
                 start_time = datetime.fromtimestamp(
-                    f.stat().st_mtime, tz=timezone.utc
+                    mtime, tz=timezone.utc
                 ).isoformat()
 
             await db.execute(
                 "INSERT OR IGNORE INTO recordings "
                 "(filename, start_time, size_bytes, storage) VALUES (?, ?, ?, 'server')",
-                (f.name, start_time, f.stat().st_size),
+                (name, start_time, size_bytes),
             )
             added += 1
 
