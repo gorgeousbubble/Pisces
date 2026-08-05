@@ -99,10 +99,10 @@
 #define SD_D0_PIN                1U            /**< PTE1  - SDHC_D0   */
 #define SD_D1_PORT               PORTE
 #define SD_D1_PIN                0U            /**< PTE0  - SDHC_D1   */
-#define SD_D2_PORT               PORTD
-#define SD_D2_PIN                13U           /**< PTD13 - SDHC_D2   */
-#define SD_D3_PORT               PORTD
-#define SD_D3_PIN                12U           /**< PTD12 - SDHC_D3   */
+#define SD_D2_PORT               PORTE
+#define SD_D2_PIN                5U            /**< PTE5  - SDHC0_D2 (K64 SDHC0 数据线只在 PTE，PTD12/13 无 SDHC 功能) */
+#define SD_D3_PORT               PORTE
+#define SD_D3_PIN                4U            /**< PTE4  - SDHC0_D3 */
 #define SD_CD_PORT               PORTE
 #define SD_CD_GPIO               PTE
 #define SD_CD_PIN                6U            /**< PTE6  - 卡检测 (低=插入) */
