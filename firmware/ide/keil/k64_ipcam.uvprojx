@@ -310,7 +310,7 @@
             <uClangAs>0</uClangAs>
             <VariousControls>
               <MiscControls></MiscControls>
-              <Define></Define>
+              <Define>CPU_MK64FN1M0VLL12</Define>
               <Undefine></Undefine>
               <IncludePath></IncludePath>
             </VariousControls>
