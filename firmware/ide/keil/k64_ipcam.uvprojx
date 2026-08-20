@@ -522,6 +522,11 @@
               <FilePath>..\..\third_party\KSDK\devices\MK64F12\drivers\fsl_sdhc.c</FilePath>
             </File>
             <File>
+              <FileName>fsl_rtc.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\third_party\KSDK\devices\MK64F12\drivers\fsl_rtc.c</FilePath>
+            </File>
+            <File>
               <FileName>system_MK64F12.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\third_party\KSDK\devices\MK64F12\system_MK64F12.c</FilePath>

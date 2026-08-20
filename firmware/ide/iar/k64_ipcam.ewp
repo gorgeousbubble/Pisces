@@ -830,6 +830,9 @@
       <name>$PROJ_DIR$\..\..\third_party\KSDK\devices\MK64F12\drivers\fsl_sdhc.c</name>
     </file>
     <file>
+      <name>$PROJ_DIR$\..\..\third_party\KSDK\devices\MK64F12\drivers\fsl_rtc.c</name>
+    </file>
+    <file>
       <name>$PROJ_DIR$\..\..\third_party\KSDK\devices\MK64F12\system_MK64F12.c</name>
     </file>
     <file>
