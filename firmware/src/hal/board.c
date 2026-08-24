@@ -32,7 +32,14 @@ static const mcg_config_t s_mcgConfig = {
 static const sim_clock_config_t s_simConfig = {
     .pllFllSel = 1U,           /* PLLFLLSEL: PLL */
     .er32kSrc  = 3U,           /* ERCLK32K: LPO */
-    .clkdiv1   = 0x01140000U,  /* OUTDIV1=/1, OUTDIV2=/2, OUTDIV4=/5 */
+    /* SIM_CLKDIV1: OUTDIV1[31:28] OUTDIV2[27:24] OUTDIV3[23:20] OUTDIV4[19:16]
+     * 字段值 = 实际分频数 - 1。PLL=120MHz 下：
+     *   OUTDIV1=0 -> /1 -> Core/System 120MHz
+     *   OUTDIV2=1 -> /2 -> Bus/Peripheral 60MHz
+     *   OUTDIV3=4 -> /5 -> FlexBus 24MHz（原为 /2=60MHz，超出 FlexBus 50MHz 上限）
+     *   OUTDIV4=4 -> /5 -> Flash 24MHz（上限 25MHz）
+     */
+    .clkdiv1   = 0x01440000U,
 };
 
 static const osc_config_t s_oscConfig = {
