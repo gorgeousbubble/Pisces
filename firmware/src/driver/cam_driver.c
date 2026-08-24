@@ -211,10 +211,19 @@ static void cam_xclk_init(void)
         .dutyCyclePercent      = 50U,
         .firstEdgeDelayPercent = 0U,
     };
-    FTM_SetupPwm(CAM_XCLK_FTM, &pwm, 1U, kFTM_EdgeAlignedPwm,
-                 24000000U, BOARD_CORE_CLOCK_HZ);
+    /* FTM_SetupPwm 末参须为 FTM 模块实际输入时钟频率。
+     * K64 的 FTM 挂在总线时钟域（kFTM_SystemClock 对 FTM 即 System/Bus clock，
+     * 本项目 60MHz）。原先传核心时钟 120MHz 会让 MOD 算大一倍，
+     * 实际 XCLK 只有期望的一半（12MHz 而非 24MHz），导致 OV2640 时序异常。 */
+    uint32_t ftm_src_hz = CLOCK_GetFreq(kCLOCK_BusClk);
+    status_t pwm_ret = FTM_SetupPwm(CAM_XCLK_FTM, &pwm, 1U, kFTM_EdgeAlignedPwm,
+                                    24000000U, ftm_src_hz);
+    if (pwm_ret != kStatus_Success) {
+        LOG_E(TAG, "XCLK PWM setup failed (FTM src=%luHz)",
+              (unsigned long)ftm_src_hz);
+    }
     FTM_StartTimer(CAM_XCLK_FTM, kFTM_SystemClock);
-    LOG_D(TAG, "XCLK 24MHz started");
+    LOG_D(TAG, "XCLK 24MHz started (FTM src=%luHz)", (unsigned long)ftm_src_hz);
 }
 
 /* -----------------------------------------------------------------------
