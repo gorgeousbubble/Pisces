@@ -16,7 +16,7 @@
           <Device>MK64FN1M0xxx12</Device>
           <Vendor>NXP</Vendor>
           <PackID>NXP.MK64F12_DFP.12.0.0</PackID>
-          <Cpu>IROM(0x00000000,0x100000) IRAM(0x20000000,0x40000) CPUTYPE("Cortex-M4") FPU2 CLOCK(12000000) ELITTLE</Cpu>
+          <Cpu>IROM(0x00000000,0x100000) IRAM(0x20000000,0x30000) IRAM2(0x1FFF0000,0x10000) CPUTYPE("Cortex-M4") FPU2 CLOCK(12000000) ELITTLE</Cpu>
           <FlashUtilSpec></FlashUtilSpec>
           <StartupFile></StartupFile>
           <FlashDriverDll>UL2CM3(-S0 -C0 -P0 -FD20000000 -FC1000 -FN1 -FF0MK_P1024 -FS00 -FL0100000 -FP0($$Device:MK64FN1M0xxx12$Flash\MK_P1024.FLM))</FlashDriverDll>
@@ -185,7 +185,7 @@
             <hadIROM>1</hadIROM>
             <hadIRAM>1</hadIRAM>
             <hadIROM2>0</hadIROM2>
-            <hadIRAM2>0</hadIRAM2>
+            <hadIRAM2>1</hadIRAM2>
             <StupSel>8</StupSel>
             <useUlib>0</useUlib>
             <EndSel>0</EndSel>
@@ -249,7 +249,7 @@
               <IRAM>
                 <Type>2</Type>
                 <StartAddress>0x20000000</StartAddress>
-                <Size>0x40000</Size>
+                <Size>0x30000</Size>
               </IRAM>
               <IROM2>
                 <Type>0</Type>
@@ -257,9 +257,9 @@
                 <Size>0x0</Size>
               </IROM2>
               <IRAM2>
-                <Type>0</Type>
-                <StartAddress>0x0</StartAddress>
-                <Size>0x0</Size>
+                <Type>2</Type>
+                <StartAddress>0x1FFF0000</StartAddress>
+                <Size>0x10000</Size>
               </IRAM2>
             </OnChipMemories>
             <RvctStartVector></RvctStartVector>
