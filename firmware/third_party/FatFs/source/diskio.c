@@ -160,7 +160,9 @@ static bool sd_card_init(void)
 
     sd_send_cmd(16U, SD_SECTOR_SIZE, kSDHC_ResponseTypeR1, NULL);
 
-    SDHC_SetSdClock(SD_SDHC, CLOCK_GetFreq(kCLOCK_CoreSysClk), 25000000U);
+    /* SDHC 模块时钟源为总线时钟（K64 SDHC 挂 Bus clock 域，本项目 60MHz）。
+     * 传核心时钟 120MHz 会使分频算错一倍，实际 SD 时钟仅 12.5MHz，读写速度腰斩。 */
+    SDHC_SetSdClock(SD_SDHC, CLOCK_GetFreq(kCLOCK_BusClk), 25000000U);
 
     return true;
 }
@@ -230,7 +232,8 @@ DSTATUS disk_initialize(BYTE pdrv)
     cfg.writeWatermarkLevel = 128U;
 
     SDHC_Init(SD_SDHC, &cfg);
-    SDHC_SetSdClock(SD_SDHC, CLOCK_GetFreq(kCLOCK_CoreSysClk), 400000U);
+    /* 初始化阶段 400kHz；时钟源同为总线时钟（见下方 25MHz 处说明） */
+    SDHC_SetSdClock(SD_SDHC, CLOCK_GetFreq(kCLOCK_BusClk), 400000U);
     SDHC_SetCardActive(SD_SDHC, 100U);
     vTaskDelay(pdMS_TO_TICKS(10U));
 
