@@ -138,28 +138,9 @@ static uint32_t parse_timestamp_from_name(const char *filename)
     return days * 86400U + hh * 3600U + mm * 60U + ss;
 }
 
-/* -----------------------------------------------------------------------
- * SDHC 底层初始化（供 FatFs diskio 调用）
- * 此处仅做 SDHC 控制器初始化，diskio.c 中的 disk_initialize 会调用它
- * ----------------------------------------------------------------------- */
-static bool sdhc_hw_init(void)
-{
-    /* 检测 SD 卡插入（CD 引脚低电平 = 已插入） */
-    if (GPIO_PinRead(SD_CD_GPIO, SD_CD_PIN) != 0U) {
-        LOG_W(TAG, "SD card not detected (CD pin high)");
-        return false;
-    }
-
-    sdhc_config_t sdhc_cfg = {
-        .cardDetectDat3      = false,
-        .endianMode          = kSDHC_EndianModeLittle,
-        .dmaMode             = kSDHC_DmaModeAdma2,
-        .readWatermarkLevel  = 128U,
-        .writeWatermarkLevel = 128U,
-    };
-    SDHC_Init(SD_SDHC, &sdhc_cfg);
-    return true;
-}
+/* 说明：SDHC 控制器的时钟门控与初始化统一由 FatFs 的 disk_initialize()
+ * （diskio.c）完成，本模块不重复初始化，避免双重 SDHC_Init。
+ * 原先此处有一个从未被调用的 sdhc_hw_init() 死函数，已移除。 */
 
 /* -----------------------------------------------------------------------
  * fm_init

@@ -231,6 +231,11 @@ DSTATUS disk_initialize(BYTE pdrv)
     cfg.readWatermarkLevel  = 128U;
     cfg.writeWatermarkLevel = 128U;
 
+    /* 必须先使能 SDHC 模块时钟门控再访问其寄存器。
+     * 与 UART/I2C/FTM/RTC 等驱动不同，KSDK 的 SDHC_Init() 内部不会自动
+     * 调用 CLOCK_EnableClock，若不显式使能，访问 SDHC 寄存器会触发 HardFault。 */
+    CLOCK_EnableClock(kCLOCK_Sdhc0);
+
     SDHC_Init(SD_SDHC, &cfg);
     /* 初始化阶段 400kHz；时钟源同为总线时钟（见下方 25MHz 处说明） */
     SDHC_SetSdClock(SD_SDHC, CLOCK_GetFreq(kCLOCK_BusClk), 400000U);
