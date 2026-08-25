@@ -9,6 +9,8 @@
 #include "fsl_gpio.h"
 #include "fsl_uart.h"
 #include "log.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 /* -----------------------------------------------------------------------
  * 时钟配置（120MHz，使用外部 12MHz 晶振 + PLL）
@@ -166,6 +168,30 @@ void BOARD_InitPins(void)
         PORT_SetPinMux(LED_ERROR_PORT,  LED_ERROR_PIN,  kPORT_MuxAsGpio);
         GPIO_PinInit(LED_STATUS_GPIO, LED_STATUS_PIN, &led_cfg);
         GPIO_PinInit(LED_ERROR_GPIO,  LED_ERROR_PIN,  &led_cfg);
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * BOARD_DelayMs — 调度器感知延时
+ *
+ * 调度器运行中：vTaskDelay 让出 CPU。
+ * 调度器未启动（main 初始化阶段）：忙等循环，避免 vTaskDelay 在无任务
+ * 上下文时命中 configASSERT 或死锁。
+ * ----------------------------------------------------------------------- */
+void BOARD_DelayMs(uint32_t ms)
+{
+    if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) {
+        vTaskDelay(pdMS_TO_TICKS(ms));
+        return;
+    }
+
+    /* 忙等：每毫秒约 (CoreClock/1000) 个周期，循环体约 4 周期，故 /4 */
+    volatile uint32_t loops = (BOARD_CORE_CLOCK_HZ / 4000U);
+    while (ms-- > 0U) {
+        volatile uint32_t i = loops;
+        while (i-- > 0U) {
+            __asm volatile ("NOP");
+        }
     }
 }
 

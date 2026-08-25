@@ -291,9 +291,11 @@ ipcam_status_t rtc_init(void)
     }
     s_rtc_source = RTC_SOURCE_INTERNAL;
 
-    /* 2. 尝试初始化 DS3231 */
+    /* 2. 尝试初始化 DS3231
+     * 用 BOARD_DelayMs：rtc_init 在调度器启动前由 main 调用，
+     * 此时 vTaskDelay 无任务上下文会崩溃 */
     ds3231_i2c_init();
-    vTaskDelay(pdMS_TO_TICKS(10U));
+    BOARD_DelayMs(10U);
 
     if (ds3231_detect()) {
         LOG_I(TAG, "DS3231 detected on I2C1");

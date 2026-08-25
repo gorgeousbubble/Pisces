@@ -138,4 +138,18 @@ void BOARD_InitPins(void);
 void BOARD_InitClocks(void);
 void BOARD_InitDebugConsole(void);
 
+/**
+ * @brief 调度器感知的毫秒延时
+ *
+ * 调度器已运行时使用 vTaskDelay 让出 CPU；
+ * 调度器尚未启动（main 中各模块初始化阶段）时退化为忙等循环。
+ *
+ * 直接在调度器启动前调用 vTaskDelay 会因缺少任务上下文而命中
+ * configASSERT 或死锁，导致系统卡在启动阶段。各驱动/服务的初始化
+ * 路径（rtc_init / cam_init / net_init 等）需用本函数替代 vTaskDelay。
+ *
+ * @param ms 延时毫秒数
+ */
+void BOARD_DelayMs(uint32_t ms);
+
 #endif /* BOARD_H */

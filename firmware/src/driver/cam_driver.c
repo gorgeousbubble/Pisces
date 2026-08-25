@@ -182,7 +182,8 @@ static ipcam_status_t ov2640_apply_regs(const reg_val_t *regs)
         if (regs[i].reg == OV2640_REG_COM7 && regs[i].val == 0x80U) {
             ipcam_status_t r = ov2640_write_reg(regs[i].reg, regs[i].val);
             if (r != IPCAM_OK) return r;
-            vTaskDelay(pdMS_TO_TICKS(10U));
+            /* BOARD_DelayMs：本函数经 cam_init 在调度器启动前也会被调用 */
+            BOARD_DelayMs(10U);
             continue;
         }
         ipcam_status_t r = ov2640_write_reg(regs[i].reg, regs[i].val);
@@ -450,9 +451,10 @@ ipcam_status_t cam_init(const cam_config_t *cfg)
         GPIO_PinInit(PTC, CAM_HREF_PIN,  &in_cfg);   /* PTC1 */
     }
 
-    /* 启动 XCLK（24MHz），等待 OV2640 上电稳定 */
+    /* 启动 XCLK（24MHz），等待 OV2640 上电稳定
+     * cam_init 在调度器启动前调用，用 BOARD_DelayMs 而非 vTaskDelay */
     cam_xclk_init();
-    vTaskDelay(pdMS_TO_TICKS(10U));
+    BOARD_DelayMs(10U);
 
     /* 初始化 I2C0（SCCB） */
     ipcam_status_t ret = cam_i2c_init();

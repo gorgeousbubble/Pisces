@@ -228,7 +228,7 @@ static bool at_wait_response(const char *expected,
 
         uint8_t byte;
         if (!uart_rx_read_byte(&byte)) {
-            vTaskDelay(1U);  /* 让出 CPU 1ms */
+            BOARD_DelayMs(1U);  /* 让出 CPU 1ms（调度器未启动时忙等） */
             continue;
         }
 
@@ -310,7 +310,7 @@ static bool at_wait_prompt(uint32_t timeout_ms)
         if (uart_rx_read_byte(&byte) && byte == '>') {
             return true;
         }
-        vTaskDelay(1U);
+        BOARD_DelayMs(1U);
     }
 }
 
@@ -399,9 +399,10 @@ ipcam_status_t net_init(const ipcam_config_t *cfg)
         return IPCAM_ERR_NOMEM;
     }
 
-    /* 硬件复位 WiFi 模块，确保初始状态干净 */
+    /* 硬件复位 WiFi 模块，确保初始状态干净
+     * net_init 在调度器启动前调用，用 BOARD_DelayMs */
     net_reset_wifi_module();
-    vTaskDelay(pdMS_TO_TICKS(500U));
+    BOARD_DelayMs(500U);
 
     /* 基础 AT 测试 */
     uart_rx_flush();
@@ -883,11 +884,12 @@ ipcam_status_t net_recv_cmd(ipcam_cmd_t *cmd)
  * ----------------------------------------------------------------------- */
 void net_reset_wifi_module(void)
 {
+    /* 用 BOARD_DelayMs：本函数经 net_init 在调度器启动前也会被调用 */
     LOG_I(TAG, "WiFi module hardware reset");
     GPIO_PinWrite(WIFI_RST_GPIO, WIFI_RST_PIN, 0U);  /* 拉低 RST */
-    vTaskDelay(pdMS_TO_TICKS(100U));                  /* 保持 100ms */
+    BOARD_DelayMs(100U);                              /* 保持 100ms */
     GPIO_PinWrite(WIFI_RST_GPIO, WIFI_RST_PIN, 1U);  /* 释放 RST */
-    vTaskDelay(pdMS_TO_TICKS(500U));                  /* 等待模块启动 */
+    BOARD_DelayMs(500U);                              /* 等待模块启动 */
 }
 
 /* -----------------------------------------------------------------------
