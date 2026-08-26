@@ -131,6 +131,23 @@ void log_write(log_level_t level, const char *tag, const char *fmt, ...)
         return;
     }
 
+    /* 调度器未启动（main 中各模块初始化阶段）：不能带超时阻塞获取互斥锁，
+     * 否则无任务上下文会命中 configASSERT 或死锁。此阶段为单线程，
+     * 无并发风险，直接用栈缓冲格式化发送。
+     *
+     * 注意：log_init 是 main 的第 2 步，之后所有初始化都会打日志，
+     * 若此处阻塞取锁，系统会在第一条日志处即挂死（且仅输出启动横幅）。 */
+    if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) {
+        char init_line[LOG_LINE_MAX];
+        va_start(args, fmt);
+        uint32_t total = log_format(init_line, level, tag, fmt, args);
+        va_end(args);
+        if (total > 0U) {
+            log_uart_send_blocking((const uint8_t *)init_line, total);
+        }
+        return;
+    }
+
     /* 任务上下文：加锁后使用共享 static 缓冲，格式化和发送均在锁内 */
     if (xSemaphoreTake(s_log_mutex, pdMS_TO_TICKS(10U)) == pdTRUE) {
         va_start(args, fmt);

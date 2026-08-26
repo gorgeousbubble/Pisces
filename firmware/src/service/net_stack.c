@@ -267,7 +267,10 @@ static bool at_wait_response(const char *expected,
              * 并要求包含 "cmd" 字段，避免把其它 JSON/AT 响应误判为命令。 */
             {
                 char *json_start = strchr(line, '{');
-                if (json_start != NULL && strstr(json_start, "\"cmd\"") != NULL) {
+                /* 调度器未启动时（net_init 阶段）不取锁：此时不会有下行命令，
+                 * 且带超时阻塞取锁在无任务上下文会命中 configASSERT */
+                if (json_start != NULL && strstr(json_start, "\"cmd\"") != NULL &&
+                    xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) {
                     if (s_cmd_mutex != NULL &&
                         xSemaphoreTake(s_cmd_mutex, pdMS_TO_TICKS(50U)) == pdTRUE) {
                         strncpy(s_cmd_buf, json_start, IPCAM_CMD_BUF_SIZE - 1U);
