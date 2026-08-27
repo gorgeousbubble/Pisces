@@ -161,6 +161,10 @@ void UART4_RX_TX_IRQHandler(void)
         uint32_t next = (s_rx_buf.head + 1U) % UART_RX_BUF_SIZE;
         if (next != s_rx_buf.tail) {
             s_rx_buf.buf[s_rx_buf.head] = byte;
+            /* 屏障：确保数据字节先于 head 更新对读者（任务侧）可见。
+             * 否则任务侧可能看到新 head 却读到该位置的旧数据（乱码），
+             * 破坏 AT 响应/命令解析。volatile 不保证跨变量的写顺序。 */
+            __DMB();
             s_rx_buf.head = next;
         }
         /* 缓冲区满时丢弃最新字节（保护旧数据） */
@@ -179,7 +183,11 @@ static bool uart_rx_read_byte(uint8_t *byte)
     if (s_rx_buf.tail == s_rx_buf.head) {
         return false;  /* 缓冲区空 */
     }
+    /* 屏障：确认 head 已推进后再读数据，与 ISR 侧的 __DMB() 配对，
+     * 保证读到的是 ISR 已真正写入的字节 */
+    __DMB();
     *byte = s_rx_buf.buf[s_rx_buf.tail];
+    __DMB();
     s_rx_buf.tail = (s_rx_buf.tail + 1U) % UART_RX_BUF_SIZE;
     return true;
 }
@@ -189,6 +197,9 @@ static bool uart_rx_read_byte(uint8_t *byte)
  * ----------------------------------------------------------------------- */
 static void uart_rx_flush(void)
 {
+    /* 读取 ISR 侧维护的 head 前加屏障，确保取到最新值；
+     * head 为 32 位对齐访问，本身原子，无需关中断 */
+    __DMB();
     s_rx_buf.tail = s_rx_buf.head;
 }
 
