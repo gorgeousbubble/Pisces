@@ -258,6 +258,7 @@ static uint32_t cam_capture_frame_polling(uint8_t *buf, uint32_t buf_size,
     TickType_t timeout_tick = pdMS_TO_TICKS(timeout_ms);
     uint32_t byte_count = 0U;
     bool     in_frame   = false;
+    bool     soi_found  = false;   /* 本帧是否曾在扫描窗口内命中 SOI */
 
     /* 等待 VSYNC 上升沿（帧开始） */
     /* 先等 VSYNC 变低（确保不在帧中间） */
@@ -328,7 +329,8 @@ static uint32_t cam_capture_frame_polling(uint8_t *buf, uint32_t buf_size,
         if (!in_frame && byte_count >= 2U && byte_count <= JPEG_SOI_SCAN_LIMIT &&
             buf[byte_count - 2U] == JPEG_MARKER_FF &&
             buf[byte_count - 1U] == JPEG_SOI_D8) {
-            in_frame = true;
+            in_frame  = true;
+            soi_found = true;
             /* 将 SOI 移到缓冲区起始（丢弃之前的无效字节） */
             buf[0] = JPEG_MARKER_FF;
             buf[1] = JPEG_SOI_D8;
@@ -336,11 +338,30 @@ static uint32_t cam_capture_frame_polling(uint8_t *buf, uint32_t buf_size,
         }
     }
 
-    /* 验证 JPEG 完整性 */
+    /* 验证 JPEG 完整性。
+     *
+     * 分开报告两种失败原因，便于上板时定位：
+     *
+     *   - SOI 未命中：SOI 只在前 JPEG_SOI_SCAN_LIMIT(64) 字节内检测，一旦
+     *     传感器的 DVP 前导字节多于该窗口，in_frame 永远为 false，整帧被
+     *     丢弃并累积 timeout_frame_count，最终触发 cam_reinit。若日志里
+     *     频繁出现这一条，说明该窗口相对实际硬件偏小。窗口的合适取值需
+     *     结合实机抓取的前导字节数确定，故此处只做区分上报、不擅改取值。
+     *
+     *   - EOI 缺失/截断：SOI 命中但帧尾不完整，通常是 VSYNC 提前结束或
+     *     JPEG 体积超出 IPCAM_JPEG_BUF_SIZE。
+     */
+    if (!soi_found) {
+        LOG_W(TAG, "JPEG SOI not found within first %u bytes, frame dropped (%lu captured)",
+              JPEG_SOI_SCAN_LIMIT, (unsigned long)byte_count);
+        return 0U;
+    }
+
     if (byte_count < 4U ||
         buf[0] != JPEG_MARKER_FF || buf[1] != JPEG_SOI_D8 ||
         buf[byte_count - 2U] != JPEG_MARKER_FF || buf[byte_count - 1U] != JPEG_EOI_D9) {
-        LOG_W(TAG, "Incomplete JPEG frame: %lu bytes", (unsigned long)byte_count);
+        LOG_W(TAG, "Incomplete JPEG frame: %lu bytes (SOI ok, EOI missing or truncated)",
+              (unsigned long)byte_count);
         return 0U;
     }
 
