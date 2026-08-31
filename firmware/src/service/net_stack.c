@@ -56,40 +56,40 @@ typedef struct {
 static volatile uart_ring_buf_t s_rx_buf;
 
 /* -----------------------------------------------------------------------
- * 活跃网络任务心跳 ID
+ * 长等待期间的心跳刷新
  *
  * net_connect / net_send_* 等函数可能同步阻塞数秒到数分钟（WiFi/TCP 重试），
  * 远超 HEARTBEAT_TIMEOUT_MS(3s)。若阻塞期间不刷新调用任务的心跳，
  * sys_manager 会误判该任务已死并触发软复位——断网即重启死循环。
  *
- * 因此在所有长等待点周期性调用 sys_heartbeat_update(s_active_hb_id)，
- * 由调用任务通过 net_set_active_heartbeat() 指明自己的心跳 ID。
- * 默认 HEARTBEAT_NET_SEND（绝大多数网络阻塞发生在推流任务）。
+ * 因此在所有长等待点周期性调用 sys_heartbeat_kick()，它按
+ * xTaskGetCurrentTaskHandle() 反查心跳 ID，只刷新真正在执行等待的那个任务。
+ *
+ * 原实现用一个全局 s_active_hb_id 记录"当前活跃任务"，由调用方通过
+ * net_set_active_heartbeat() 设置。但本文件的等待函数会被 task_net_send 与
+ * task_cmd_handler 并发进入：拍照期间 cmd_handler 把 ID 设成
+ * HEARTBEAT_CMD_HANDLER，而此时仍阻塞在 at_wait_response 里的 task_net_send
+ * 会去刷新 CMD 的时间戳，自己的 HEARTBEAT_NET_SEND 得不到刷新，3s 后被
+ * sys_manager 判定死亡并触发软复位——每次拍照都可能重启板子。而且
+ * sys_heartbeat_update 会顺带把 s_heartbeat_task[HEARTBEAT_CMD_HANDLER]
+ * 覆写成 NET 任务的句柄，把反查表一起污染。
  * ----------------------------------------------------------------------- */
-static volatile heartbeat_id_t s_active_hb_id = HEARTBEAT_NET_SEND;
 
 /* 长等待期间喂心跳的节流间隔（ms） */
 #define CONN_HEARTBEAT_FEED_MS   500U
 
-void net_set_active_heartbeat(heartbeat_id_t id)
-{
-    if (id < HEARTBEAT_COUNT) {
-        s_active_hb_id = id;
-    }
-}
-
-/* 分段延时，期间周期性刷新活跃任务心跳，避免长睡眠触发心跳超时复位 */
+/* 分段延时，期间周期性刷新当前任务的心跳，避免长睡眠触发心跳超时复位 */
 static void conn_delay_with_heartbeat(uint32_t total_ms)
 {
     uint32_t elapsed = 0U;
     while (elapsed < total_ms) {
         uint32_t step = (total_ms - elapsed) < CONN_HEARTBEAT_FEED_MS
                         ? (total_ms - elapsed) : CONN_HEARTBEAT_FEED_MS;
-        sys_heartbeat_update(s_active_hb_id);
+        sys_heartbeat_kick();
         vTaskDelay(pdMS_TO_TICKS(step));
         elapsed += step;
     }
-    sys_heartbeat_update(s_active_hb_id);
+    sys_heartbeat_kick();
 }
 
 /* -----------------------------------------------------------------------
@@ -233,7 +233,7 @@ static bool at_wait_response(const char *expected,
 
         /* 长等待期间周期性喂心跳，防止 sys_manager 误判任务死亡 */
         if ((now_ms - last_hb_ms) >= CONN_HEARTBEAT_FEED_MS) {
-            sys_heartbeat_update(s_active_hb_id);
+            sys_heartbeat_kick();
             last_hb_ms = now_ms;
         }
 
@@ -316,7 +316,7 @@ static bool at_wait_prompt(uint32_t timeout_ms)
         if ((now_ms - start_ms) >= timeout_ms) return false;
 
         if ((now_ms - last_hb_ms) >= CONN_HEARTBEAT_FEED_MS) {
-            sys_heartbeat_update(s_active_hb_id);
+            sys_heartbeat_kick();
             last_hb_ms = now_ms;
         }
 

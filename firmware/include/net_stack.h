@@ -111,16 +111,10 @@ bool net_status_report_pending(void);
  */
 void net_clear_status_report(void);
 
-/**
- * @brief 设置当前调用网络阻塞函数的任务心跳 ID
- *
- * net_connect / net_send_* 等函数在其内部长等待期间会周期性刷新
- * 此 ID 对应任务的心跳，避免阻塞超过 HEARTBEAT_TIMEOUT_MS 被误判死亡。
- * task_net_send 使用默认值 HEARTBEAT_NET_SEND；task_cmd_handler 在调用
- * 可能阻塞的网络函数前应设置为 HEARTBEAT_CMD_HANDLER，返回后复位。
- *
- * @param id  调用任务的心跳 ID
- */
-void net_set_active_heartbeat(heartbeat_id_t id);
+/* 说明：原先这里有 net_set_active_heartbeat(heartbeat_id_t)，用于让调用方
+ * 告知网络层"当前活跃任务的心跳 ID"。该机制在 task_net_send 与
+ * task_cmd_handler 并发进入网络等待函数时会互相覆盖，导致喂错心跳并触发
+ * 误复位，已移除。网络层的长等待点改为直接调用 sys_heartbeat_kick()，
+ * 由它按当前任务句柄反查心跳 ID，调用方无需做任何事。 */
 
 #endif /* NET_STACK_H */

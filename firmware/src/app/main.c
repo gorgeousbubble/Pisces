@@ -54,6 +54,20 @@
 #define PRIO_SYS_MANAGER     (configMAX_PRIORITIES - 4U)  /* 低   */
 
 /* -----------------------------------------------------------------------
+ * 采集失败后的退避延时
+ *
+ * cam_capture_frame_polling 是纯忙等实现，且 PRIO_CAM_CAPTURE(4) 高于
+ * NET/FILE/CMD(3) 与 SYS_MANAGER(2)——其内部的 taskYIELD() 只让给同级或
+ * 更高优先级的任务，低优先级任务一个都轮不到。因此采集失败后必须真正
+ * 阻塞一段时间，否则本任务会 100% 占满 CPU。
+ *
+ * 取 20ms：单帧超时 IPCAM_CAM_FRAME_TIMEOUT_MS 为 66ms，20ms 退避既能让
+ * 其余任务每轮拿到足够时间片刷新心跳，又把摄像头恢复的检测延迟控制在
+ * 一帧周期量级。
+ * ----------------------------------------------------------------------- */
+#define CAM_FAIL_BACKOFF_MS  (20U)
+
+/* -----------------------------------------------------------------------
  * 编码帧队列（cam_capture -> net_send / file_write 共享）
  * ----------------------------------------------------------------------- */
 static QueueHandle_t s_frame_queue_net  = NULL;  /**< 发往网络的帧队列 */
@@ -103,11 +117,18 @@ static void task_cam_capture(void *param)
                 }
                 consecutive_timeout = 0U;
             }
+            /* 必须阻塞让出 CPU，不能直接 continue。
+             * 否则摄像头不在位时会立刻重入 66ms 忙等，本任务独占 CPU，
+             * 其余任务心跳全部陈旧 -> sys_watchdog_task 停止喂狗 ->
+             * 硬件看门狗复位 -> 重启后重复，形成无限复位环，
+             * 使 main 中"摄像头失败仍继续启动，允许远程诊断"的设计失效。 */
+            vTaskDelay(pdMS_TO_TICKS(CAM_FAIL_BACKOFF_MS));
             continue;
         }
 
         if (ret != IPCAM_OK) {
             LOG_E(TAG, "cam_get_frame error: %d", (int)ret);
+            vTaskDelay(pdMS_TO_TICKS(CAM_FAIL_BACKOFF_MS));  /* 同上，避免空转独占 CPU */
             continue;
         }
 
@@ -152,6 +173,13 @@ static void task_net_send(void *param)
 {
     (void)param;
     LOG_I(TAG, "task_net_send started");
+
+    /* 先注册本任务的心跳句柄，使 net_connect 内部长等待点调用的
+     * sys_heartbeat_kick() 能反查到 HEARTBEAT_NET_SEND。首次 net_connect
+     * 在循环之前执行，若不先注册，反查表为空、kick 无操作，只能依赖
+     * sys_manager/sys_watchdog 对 last_ts==0 的容忍——那是个隐式约定，
+     * 不宜作为正确性依据。 */
+    sys_heartbeat_update(HEARTBEAT_NET_SEND);
 
     /* 调度器已启动，此处触发首次 WiFi + TCP 连接 */
     net_connect();
@@ -293,10 +321,9 @@ static void task_cmd_handler(void *param)
             /* 拍照初始质量：不低于 80 以保证画质 */
             uint8_t q = (cmd.quality >= 80U) ? cmd.quality : 80U;
 
-            /* 拍照上传（net_send_snapshot）可能长时间阻塞，
-             * 期间让网络层刷新本任务心跳，避免被误判死亡触发复位 */
-            net_set_active_heartbeat(HEARTBEAT_CMD_HANDLER);
-
+            /* 拍照上传（net_send_snapshot）可能长时间阻塞，但无需在此声明
+             * 心跳 ID：网络层的长等待点调用 sys_heartbeat_kick()，按当前
+             * 任务句柄反查，本任务已在循环顶部注册过 HEARTBEAT_CMD_HANDLER。 */
             cam_set_resolution(CAM_RES_HD720P);
 
             bool captured = false;
@@ -356,8 +383,6 @@ static void task_cmd_handler(void *param)
             cam_set_resolution(CAM_RES_VGA);
             cam_set_quality(g_ipcam_config.jpeg_quality);
 
-            /* 拍照上传结束，心跳 ID 复位给推流任务 */
-            net_set_active_heartbeat(HEARTBEAT_NET_SEND);
             break;
         }
 
