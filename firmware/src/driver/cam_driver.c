@@ -398,6 +398,14 @@ void cam_capture_task_body(void)
 
     /* 采集成功：更新就绪帧信息，切换缓冲区，释放信号量 */
     s_cam.timeout_frame_count = 0U;
+
+    /* 成功出帧说明摄像头确实恢复了，清零重初始化次数。
+     * IPCAM_CAM_REINIT_MAX 的用意是"不要对一个已损坏的摄像头无限重试"，
+     * 而原实现只在 cam_init 的 memset 里清零该计数，于是设备连续运行几天
+     * 后即使每次重初始化都成功恢复，第 4 次也会被永久拒绝。
+     * 每次 cam_reinit 之前都需累积 IPCAM_CAM_TIMEOUT_FRAMES 次连续失败，
+     * 故此处清零不会导致对故障摄像头的高频重试。 */
+    s_cam.reinit_count = 0U;
     s_frame_ready_size = size;
 
     /* 消费拍照请求：本帧若被请求为拍照帧则打标，请求随即清除 */
@@ -512,9 +520,13 @@ ipcam_status_t cam_get_frame(ipcam_frame_t *frame, uint32_t timeout_ms)
 
     TickType_t ticks = (timeout_ms == 0U) ? 0U : pdMS_TO_TICKS(timeout_ms);
     if (xSemaphoreTake(s_frame_ready_sem, ticks) != pdTRUE) {
-        s_cam.drop_count++;
-        s_cam.timeout_frame_count++;
-        sys_drop_counter_inc();
+        /* 此处不计丢帧：本函数只是取用采集侧的产物，并不采集。
+         * 采集失败已由 cam_capture_task_body 计过一次；task_cam_capture
+         * 每轮先调采集体再以 timeout_ms=0 轮询本函数，采集失败必然导致
+         * 这里也取不到信号量，原实现于是把同一次失败计了两遍：
+         *   - 上报服务器的 drops 是真实值的两倍
+         *   - timeout_frame_count 双倍累加，使 cam_reinit 在 5 次真实失败
+         *     后就触发，而非 IPCAM_CAM_TIMEOUT_FRAMES 声称的 10 次 */
         return IPCAM_ERR_TIMEOUT;
     }
 
