@@ -197,9 +197,19 @@ static ipcam_status_t k64_rtc_init_hw(void)
     rtc_cfg.supervisorAccess     = false;
     RTC_Init(RTC, &rtc_cfg);
 
-    /* 若 RTC 振荡器未运行，启动它 */
+    /* TIF 清零表示时间寄存器内容有效（VBAT 供电期间未丢失）。
+     *
+     * 但"内容有效"不等于"计数器在跑"：RTC_Init() 并不置 TCE，计数器可能
+     * 仍处于停止状态——例如上一次运行中被软件停表后发生复位。原实现在此
+     * 直接 return，于是计数器永远不会启动、时间永久冻结，而 rtc_is_valid()
+     * 因年份合法仍返回 true。后果是所有录像/照片文件名都用同一个时间戳，
+     * file_mgr 的 FA_CREATE_ALWAYS 会不断覆盖同名文件。
+     * 因此这里必须显式确认 TCE 已使能。 */
     if (!(RTC->SR & RTC_SR_TIF_MASK)) {
-        /* 时间有效，振荡器已在运行 */
+        if (!(RTC->SR & RTC_SR_TCE_MASK)) {
+            RTC_StartTimer(RTC);
+            LOG_W(TAG, "K64 RTC time valid but counter was stopped, started it");
+        }
         return IPCAM_OK;
     }
 
