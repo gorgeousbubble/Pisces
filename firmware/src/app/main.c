@@ -390,7 +390,10 @@ static void task_cmd_handler(void *param)
                     captured = true;
                     bool sd_failed = false;
                     /* 保存到 SD 卡 */
-                    char path[FM_FILENAME_MAX_LEN];
+                    /* fm_save_snapshot 返回含 "snapshots/" 前缀的相对路径，
+                     * 共 34 字符，须按 FM_PATH_MAX_LEN 定尺寸；
+                     * 原先用 FM_FILENAME_MAX_LEN(32) 会被截断成错误路径 */
+                    char path[FM_PATH_MAX_LEN];
                     ipcam_status_t fm_ret = fm_save_snapshot(snap.data, snap.size, path);
                     if (fm_ret != IPCAM_OK) {
                         LOG_W(TAG, "Snapshot SD save failed: %d", (int)fm_ret);
@@ -411,9 +414,18 @@ static void task_cmd_handler(void *param)
                           q, new_q);
                     q = new_q;
                 } else {
-                    LOG_W(TAG, "Snapshot failed after %lu attempts (min quality reached)",
-                          (unsigned long)(attempt + 1U));
+                    /* 已到最低质量，不再降质量，但仍按剩余次数继续重试。
+                     * 原日志写作 "failed after N attempts"，读起来像最终结论，
+                     * 而循环并不在此 break，与实际行为不符。 */
+                    LOG_W(TAG, "Snapshot timeout at min quality %u, retrying (%lu/%u)",
+                          q, (unsigned long)(attempt + 1U),
+                          IPCAM_SNAPSHOT_MAX_ATTEMPTS);
                 }
+            }
+
+            if (!captured) {
+                LOG_E(TAG, "Snapshot failed after %u attempts",
+                      IPCAM_SNAPSHOT_MAX_ATTEMPTS);
             }
 
             /* 撤销可能仍挂起的拍照请求：否则它会把之后某一帧普通视频帧

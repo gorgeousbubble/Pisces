@@ -64,7 +64,9 @@ ipcam_status_t fm_write_frame(const uint8_t *data, uint32_t size);
  * @brief 保存一张照片
  * @param data      JPEG 数据
  * @param size      数据字节数
- * @param out_path  输出：实际保存的文件路径（缓冲区至少 FM_FILENAME_MAX_LEN 字节）
+ * @param out_path  输出：实际保存的相对路径，形如 "snapshots/SNAP_YYYYMMDD_HHMMSS.jpg"
+ *                  缓冲区至少 FM_PATH_MAX_LEN 字节。注意该路径含目录前缀，
+ *                  共 34 字符，FM_FILENAME_MAX_LEN(32) 装不下会被截断
  * @return IPCAM_OK / IPCAM_ERR_IO
  */
 ipcam_status_t fm_save_snapshot(const uint8_t *data, uint32_t size, char *out_path);

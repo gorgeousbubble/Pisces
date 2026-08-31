@@ -398,7 +398,8 @@ ipcam_status_t fm_save_snapshot(const uint8_t *data, uint32_t size, char *out_pa
     char ts[20];
     get_timestamp_str(ts, sizeof(ts));
 
-    char filepath[FM_FILENAME_MAX_LEN + 16U];
+    /* 完整路径含 "0:/snapshots/" 前缀，按 FM_PATH_MAX_LEN 定尺寸 */
+    char filepath[FM_PATH_MAX_LEN];
     snprintf(filepath, sizeof(filepath), "0:/snapshots/SNAP_%s.jpg", ts);
 
     FIL fil;
@@ -419,12 +420,16 @@ ipcam_status_t fm_save_snapshot(const uint8_t *data, uint32_t size, char *out_pa
         return IPCAM_ERR_IO;
     }
 
-    /* 返回不含卷号的路径（供服务器端使用） */
+    /* 返回不含卷号的相对路径（供服务器端使用）。
+     * 该路径含 "snapshots/" 目录前缀，共 34 字符
+     * （snapshots/ 10 + SNAP_ 5 + 时间戳 15 + .jpg 4），
+     * 原实现按 FM_FILENAME_MAX_LEN(32) 拷贝会截成 31 字符、丢掉扩展名，
+     * 返回一个不存在的路径。此处按 FM_PATH_MAX_LEN(64) 计算。 */
     if (out_path != NULL) {
         /* 跳过 "0:/" 前缀 */
         const char *rel = filepath + 3U;
-        strncpy(out_path, rel, FM_FILENAME_MAX_LEN - 1U);
-        out_path[FM_FILENAME_MAX_LEN - 1U] = '\0';
+        strncpy(out_path, rel, FM_PATH_MAX_LEN - 1U);
+        out_path[FM_PATH_MAX_LEN - 1U] = '\0';
     }
 
     LOG_I(TAG, "Snapshot saved: %s (%lu bytes)", filepath, (unsigned long)size);
