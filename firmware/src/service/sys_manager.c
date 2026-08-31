@@ -56,7 +56,14 @@ static void wdog_init(void)
     wdog_config_t cfg;
     WDOG_GetDefaultConfig(&cfg);
     cfg.enableWdog    = true;
-    cfg.timeoutValue  = 0x0500U;  /* 约 5 秒（LPO 1kHz，分频后） */
+    /* 时钟源 LPO = 1kHz，预分频 /1 → 计数器 1 tick = 1ms，
+     * 因此 timeoutValue 的单位就是毫秒，可直接用 WDG_TIMEOUT_MS。
+     *
+     * 原值硬编码 0x0500 = 1280，即实际超时 1.28s，而注释/日志/board.h
+     * 都声称 5s。喂狗间隔 WDG_FEED_INTERVAL_MS 为 1000ms，余量仅 280ms，
+     * 任何一次 >=280ms 的调度延迟都会造成莫名的看门狗复位。
+     * 改为从 WDG_TIMEOUT_MS 推导，使硬件行为与文档不可能再分叉。 */
+    cfg.timeoutValue  = WDG_TIMEOUT_MS;
     cfg.clockSource   = kWDOG_LpoClockSource;
     cfg.prescaler     = kWDOG_ClockPrescalerDivide1;
     cfg.enableUpdate  = true;
