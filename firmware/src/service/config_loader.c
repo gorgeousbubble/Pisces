@@ -35,10 +35,14 @@ static char *str_trim(char *s)
     while (*s && isspace((unsigned char)*s)) {
         s++;
     }
-    /* 去尾部空白 */
-    char *end = s + strlen(s) - 1;
-    while (end > s && isspace((unsigned char)*end)) {
-        *end-- = '\0';
+    /* 去尾部空白。
+     * 原实现写作 char *end = s + strlen(s) - 1，空串时会构造 s-1 这个
+     * 越界指针，属于未定义行为——虽然随后的 end > s 判断使它实际不会被
+     * 解引用，但构造本身即为 UB，某些优化下行为不确定。改用长度递减，
+     * 全程不产生越界指针。 */
+    size_t len = strlen(s);
+    while (len > 0U && isspace((unsigned char)s[len - 1U])) {
+        s[--len] = '\0';
     }
     return s;
 }
