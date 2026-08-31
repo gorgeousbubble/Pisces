@@ -153,9 +153,10 @@ async def _parse_mjpeg_stream(reader: asyncio.StreamReader) -> None:
             header_section = buf[boundary_pos:header_end].decode("utf-8", errors="ignore")
             header_end += 4  # 跳过 \r\n\r\n
 
-            # 解析 part 头：Content-Length 及拍照标记
+            # 解析 part 头：Content-Length 及拍照/状态标记
             content_length = None
             is_snapshot = False
+            is_status = False
             snap_sd_failed = False
             for line in header_section.splitlines():
                 low = line.lower()
@@ -167,6 +168,10 @@ async def _parse_mjpeg_stream(reader: asyncio.StreamReader) -> None:
                 elif low.startswith("x-snapshot:"):
                     # 带 X-Snapshot 标记的 part 是拍照帧，不广播到视频流
                     is_snapshot = True
+                elif low.startswith("x-status:"):
+                    # 带 X-Status 标记的 part 的 body 是状态 JSON，不是 JPEG。
+                    # 见 firmware/src/service/net_stack.c 的 net_send_status()。
+                    is_status = True
                 elif low.startswith("x-sd-failed:"):
                     snap_sd_failed = (line.split(":", 1)[1].strip().lower() == "true")
 
@@ -231,18 +236,47 @@ def _parse_status_message(data: bytes) -> Optional[dict]:
 # 拍照响应处理
 # ---------------------------------------------------------------------------
 
+# MCU 上报的紧凑字段名 → 服务器内部规范字段名。
+# MCU 侧受串口带宽限制使用短键（见 firmware/src/service/net_stack.c 的
+# net_send_status），服务器内部与 models.McuStatus / mcu_status_log 表使用完整键名。
+# 表中未列出的键原样保留，故固件新增字段时无需同步修改此处。
+_MCU_STATUS_KEY_MAP = {
+    "net":    "net_state",
+    "uptime": "uptime_sec",
+    "drops":  "drop_count",
+    "cam":    "cam_available",
+    "sd":     "sd_available",
+    "sd_low": "sd_low_space",
+}
+
+
+def _normalize_mcu_status(raw: dict) -> dict:
+    """将 MCU 上报的状态 JSON 归一化为服务器内部字段名。
+
+    MCU 发送：
+        {"net":..,"fps":..,"sd_free_mb":..,"uptime":..,"drops":..,
+         "cam":..,"sd":..,"sd_low":..}
+
+    已经使用规范名的键原样通过，因此新旧两种固件都能被正确解析。
+    不做映射会导致 /api/status 的 net_state/uptime_sec/drop_count/
+    cam_available/sd_available/sd_low_space 永远停留在初始默认值。
+    """
+    return {_MCU_STATUS_KEY_MAP.get(k, k): v for k, v in raw.items()}
+
+
 async def _apply_mcu_status(status_obj: dict) -> None:
     """更新最近已知状态并写入状态日志。
 
     供两条路径共用：推流内的 X-Status part、以及独立 POST /status 连接。
     """
-    last_known_status.update(status_obj)
+    normalized = _normalize_mcu_status(status_obj)
+    last_known_status.update(normalized)
     last_known_status["mcu_online"] = True
     last_known_status["last_seen"] = (
         __import__("datetime").datetime.utcnow().isoformat() + "Z"
     )
-    await models.insert_status_log(status_obj)
-    logger.debug("MCU status updated: fps=%s", status_obj.get("fps"))
+    await models.insert_status_log(normalized)
+    logger.debug("MCU status updated: fps=%s", normalized.get("fps"))
 
 
 async def _handle_snapshot_response(jpeg_data: bytes, sd_failed: bool) -> None:
