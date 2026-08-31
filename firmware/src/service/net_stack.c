@@ -440,6 +440,33 @@ ipcam_status_t net_init(const ipcam_config_t *cfg)
 }
 
 /* -----------------------------------------------------------------------
+ * 私有：标记 TCP 推流中断（累加重试计数并刷新计时起点）
+ *
+ * net_tick 依赖这两个字段做决策：
+ *   - tcp_retry_count      判断"重连是否已耗尽 -> 转 OFFLINE"
+ *   - disconnect_start_ms  做重连间隔节流
+ *
+ * 但原实现中两者只在成功路径上被清零，从未在失败路径上更新：
+ *   - tcp_retry_count 全文只有赋 0、没有任何自增，恒为 0，于是 net_tick 里
+ *     NET_STATE_WIFI_CONNECTED -> NET_STATE_OFFLINE 的迁移永远不会发生。
+ *     net_connect 自己的重试用的是局部循环变量 i，与该字段无关。
+ *   - disconnect_start_ms 在发送失败降级时不更新，net_tick 拿一个陈旧
+ *     （或为 0）的时间戳做间隔判断，条件立刻成立，"避免频繁重试"失效。
+ *
+ * 计数在 IPCAM_TCP_RETRY_MAX 处饱和：net_tick 只做 >= 比较，饱和即可，
+ * 同时避免长期运行后的回绕。
+ * ----------------------------------------------------------------------- */
+static void net_mark_tcp_down(void)
+{
+    s_net.state            = NET_STATE_WIFI_CONNECTED;
+    s_net.http_header_sent = false;
+    if (s_net.tcp_retry_count < IPCAM_TCP_RETRY_MAX) {
+        s_net.tcp_retry_count++;
+    }
+    s_net.disconnect_start_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
+
+/* -----------------------------------------------------------------------
  * 私有：连接 WiFi
  * ----------------------------------------------------------------------- */
 static ipcam_status_t wifi_connect(void)
@@ -488,7 +515,7 @@ static ipcam_status_t tcp_connect_and_start_stream(void)
 
     if (!at_wait_response("CONNECT", AT_TCP_TIMEOUT_MS, NULL, 0U)) {
         LOG_W(TAG, "TCP connect failed");
-        s_net.state = NET_STATE_WIFI_CONNECTED;
+        net_mark_tcp_down();
         return IPCAM_ERR_TIMEOUT;
     }
 
@@ -514,7 +541,7 @@ static ipcam_status_t tcp_connect_and_start_stream(void)
         ipcam_status_t ret = at_cipsend((const uint8_t *)http_header, (uint32_t)hlen);
         if (ret != IPCAM_OK) {
             LOG_W(TAG, "Failed to send HTTP header");
-            s_net.state = NET_STATE_WIFI_CONNECTED;
+            net_mark_tcp_down();
             return ret;
         }
     }
@@ -634,8 +661,7 @@ done:
 
     if (ret != IPCAM_OK) {
         /* 发送失败，标记 TCP 断开，触发重连 */
-        s_net.state = NET_STATE_WIFI_CONNECTED;
-        s_net.http_header_sent = false;
+        net_mark_tcp_down();
     }
     return ret;
 }
@@ -718,8 +744,7 @@ snap_done:
               (unsigned long)size, (int)sd_failed);
     } else {
         /* 发送失败，标记 TCP 断开触发重连 */
-        s_net.state = NET_STATE_WIFI_CONNECTED;
-        s_net.http_header_sent = false;
+        net_mark_tcp_down();
     }
     return ret;
 }
