@@ -73,9 +73,37 @@
 static QueueHandle_t s_frame_queue_net  = NULL;  /**< 发往网络的帧队列 */
 static QueueHandle_t s_frame_queue_file = NULL;  /**< 发往文件的帧队列 */
 
-/* 拍照完成信号量（cmd_handler 等待，cam_capture 释放） */
-static SemaphoreHandle_t s_snapshot_sem = NULL;
-static ipcam_frame_t     s_snapshot_frame;
+/* -----------------------------------------------------------------------
+ * 拍照帧移交队列（深度 1）：cam_capture 投递，cmd_handler 取出
+ *
+ * 原实现是"全局 s_snapshot_frame + 二值信号量"，有两个问题：
+ *
+ *   - s_snapshot_frame 是无保护的跨任务共享变量。CAM 任务优先级(4)高于
+ *     CMD(3)，可在 cmd_handler 读取其字段的过程中抢占并 memcpy 覆写，
+ *     造成撕裂读。
+ *
+ *   - 帧的引用计数随描述符一起移交，但 cmd_handler 放弃等待后没有任何人
+ *     负责释放。该缓冲区的 refcount 永久停在 1，而 cam_capture_task_body
+ *     每次都检查目标写缓冲区 refcount 是否为 0，双缓冲又交替使用——此后
+ *     每隔一帧必丢，帧率永久腰斩且 drop_count 持续上涨。
+ *
+ * 换成队列后描述符由队列整体拷贝，不再是共享变量；且"投递失败"与"迟到
+ * 帧无人消费"两条路径都有明确的释放责任人。
+ * ----------------------------------------------------------------------- */
+static QueueHandle_t s_snapshot_queue = NULL;
+
+/* 清空拍照帧队列并释放其中每一帧的引用。
+ * 拍照命令开始前调用：丢弃上一次迟到的结果，避免把旧图像当本次结果返回。
+ * 拍照命令结束后调用：回收在放弃等待之后才到达的帧，防止 refcount 泄漏。 */
+static void snapshot_queue_drain(void)
+{
+    if (s_snapshot_queue == NULL) return;
+
+    ipcam_frame_t stale;
+    while (xQueueReceive(s_snapshot_queue, &stale, 0U) == pdTRUE) {
+        cam_release_frame(&stale);
+    }
+}
 
 /* -----------------------------------------------------------------------
  * task_cam_capture
@@ -134,11 +162,16 @@ static void task_cam_capture(void *param)
 
         consecutive_timeout = 0U;
 
-        /* 拍照帧单独处理：引用转移给 s_snapshot_frame，
-         * 由 task_cmd_handler 上传完成后调用 cam_release_frame 释放 */
+        /* 拍照帧单独处理：不进视频队列，改投递到拍照帧队列 */
         if (frame.is_snapshot) {
-            memcpy(&s_snapshot_frame, &frame, sizeof(ipcam_frame_t));
-            xSemaphoreGive(s_snapshot_sem);
+            /* 引用随描述符移交给 task_cmd_handler，由其取出后释放。
+             * 队列满说明上一张拍照帧没人取走，此时必须由本任务释放，
+             * 否则该缓冲区的 refcount 永久不归零。 */
+            if (xQueueSend(s_snapshot_queue, &frame, 0U) != pdTRUE) {
+                LOG_W(TAG, "Snapshot queue full, frame #%lu released",
+                      (unsigned long)frame.frame_id);
+                cam_release_frame(&frame);
+            }
             continue;
         }
 
@@ -326,22 +359,27 @@ static void task_cmd_handler(void *param)
              * 任务句柄反查，本任务已在循环顶部注册过 HEARTBEAT_CMD_HANDLER。 */
             cam_set_resolution(CAM_RES_HD720P);
 
+            /* 丢弃上一次拍照迟到的结果，避免把旧图像当作本次结果返回 */
+            snapshot_queue_drain();
+
             bool captured = false;
             for (uint32_t attempt = 0U;
                  attempt < IPCAM_SNAPSHOT_MAX_ATTEMPTS && !captured;
                  attempt++) {
 
                 cam_set_quality(q);
-                /* 请求将下一帧标记为拍照帧，采集任务会通过 s_snapshot_sem 通知 */
+                /* 请求将下一帧标记为拍照帧，采集任务会投递到 s_snapshot_queue */
                 cam_request_snapshot();
 
                 /* 分段等待拍照帧：每 500ms 刷新一次心跳，避免整段等待
                  * （最坏 MAX_ATTEMPTS×TIMEOUT）被 sys_manager 误判任务死亡 */
+                ipcam_frame_t snap;
                 bool got = false;
                 uint32_t waited = 0U;
                 while (waited < IPCAM_SNAPSHOT_TIMEOUT_MS) {
                     sys_heartbeat_update(HEARTBEAT_CMD_HANDLER);
-                    if (xSemaphoreTake(s_snapshot_sem, pdMS_TO_TICKS(500U)) == pdTRUE) {
+                    if (xQueueReceive(s_snapshot_queue, &snap,
+                                      pdMS_TO_TICKS(500U)) == pdTRUE) {
                         got = true;
                         break;
                     }
@@ -353,17 +391,16 @@ static void task_cmd_handler(void *param)
                     bool sd_failed = false;
                     /* 保存到 SD 卡 */
                     char path[FM_FILENAME_MAX_LEN];
-                    ipcam_status_t fm_ret = fm_save_snapshot(
-                        s_snapshot_frame.data, s_snapshot_frame.size, path);
+                    ipcam_status_t fm_ret = fm_save_snapshot(snap.data, snap.size, path);
                     if (fm_ret != IPCAM_OK) {
                         LOG_W(TAG, "Snapshot SD save failed: %d", (int)fm_ret);
                         sd_failed = true;
                     }
                     /* 上传到服务器 */
-                    net_send_snapshot(s_snapshot_frame.data, s_snapshot_frame.size, sd_failed);
+                    net_send_snapshot(snap.data, snap.size, sd_failed);
 
                     /* 释放拍照帧引用，允许采集侧复用该缓冲区 */
-                    cam_release_frame(&s_snapshot_frame);
+                    cam_release_frame(&snap);
                 } else if (q > IPCAM_SNAPSHOT_MIN_QUALITY) {
                     /* 超时最可能是 720P JPEG 超出帧缓冲被丢弃，降质量减小体积后重试 */
                     uint8_t new_q =
@@ -378,6 +415,13 @@ static void task_cmd_handler(void *param)
                           (unsigned long)(attempt + 1U));
                 }
             }
+
+            /* 撤销可能仍挂起的拍照请求：否则它会把之后某一帧普通视频帧
+             * 标记为 is_snapshot，使其被分流出视频流却已无人消费 */
+            cam_cancel_snapshot();
+
+            /* 回收在放弃等待之后才到达的拍照帧，防止其引用计数永久不归零 */
+            snapshot_queue_drain();
 
             /* 恢复 VGA 模式 */
             cam_set_resolution(CAM_RES_VGA);
@@ -484,10 +528,10 @@ int main(void)
     /* 9. 创建队列和信号量 */
     s_frame_queue_net  = xQueueCreate(IPCAM_FRAME_QUEUE_DEPTH, sizeof(ipcam_frame_t));
     s_frame_queue_file = xQueueCreate(IPCAM_FRAME_QUEUE_DEPTH, sizeof(ipcam_frame_t));
-    s_snapshot_sem     = xSemaphoreCreateBinary();
+    s_snapshot_queue   = xQueueCreate(1U, sizeof(ipcam_frame_t));
 
-    if (s_frame_queue_net == NULL || s_frame_queue_file == NULL || s_snapshot_sem == NULL) {
-        LOG_E(TAG, "Queue/semaphore creation failed");
+    if (s_frame_queue_net == NULL || s_frame_queue_file == NULL || s_snapshot_queue == NULL) {
+        LOG_E(TAG, "Queue creation failed");
         LED_ERROR_ON();
         for (;;) { __asm("NOP"); }
     }

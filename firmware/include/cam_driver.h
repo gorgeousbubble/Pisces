@@ -112,6 +112,14 @@ void cam_set_fps(uint8_t fps);
 void cam_request_snapshot(void);
 
 /**
+ * @brief 撤销尚未被消费的拍照请求
+ *
+ * 拍照流程放弃等待（超时或重试耗尽）后应调用，否则挂起的请求会把之后
+ * 某一帧普通视频帧标记为 is_snapshot，使其被分流出视频流却无人消费。
+ */
+void cam_cancel_snapshot(void);
+
+/**
  * @brief 获取累计丢帧计数
  */
 uint32_t cam_get_drop_count(void);
