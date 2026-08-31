@@ -107,8 +107,10 @@ static bool sd_card_init(void)
 {
     uint32_t resp[4];
 
+    /* 用 BOARD_DelayMs：本函数经 fm_init -> f_mount -> disk_initialize
+     * 在调度器启动前被调用，此时 vTaskDelay 无任务上下文会崩溃 */
     sd_send_cmd(0U, 0U, kSDHC_ResponseTypeNone, NULL);
-    vTaskDelay(pdMS_TO_TICKS(10U));
+    BOARD_DelayMs(10U);
 
     bool is_v2 = sd_send_cmd(8U, 0x000001AAU, kSDHC_ResponseTypeR7, resp);
     if (is_v2 && (resp[0] & 0xFFU) != 0xAAU) {
@@ -128,7 +130,7 @@ static bool sd_card_init(void)
                 break;
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(10U));
+        BOARD_DelayMs(10U);
     }
     if (!ready) return false;
 
@@ -240,7 +242,8 @@ DSTATUS disk_initialize(BYTE pdrv)
     /* 初始化阶段 400kHz；时钟源同为总线时钟（见下方 25MHz 处说明） */
     SDHC_SetSdClock(SD_SDHC, CLOCK_GetFreq(kCLOCK_BusClk), 400000U);
     SDHC_SetCardActive(SD_SDHC, 100U);
-    vTaskDelay(pdMS_TO_TICKS(10U));
+    /* 同上：disk_initialize 在调度器启动前经 f_mount 被调用 */
+    BOARD_DelayMs(10U);
 
     if (!sd_card_init()) {
         s_sd.initialized = false;
