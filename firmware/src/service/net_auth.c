@@ -16,6 +16,14 @@
 #define TAG "AUTH"
 
 /* -----------------------------------------------------------------------
+ * 签名消息缓冲区尺寸
+ * SIGN_MSG_MAX  ：容纳 "method:path:timestamp"（含结尾 NUL）
+ * SIGN_BODY_MAX ：参与签名的 body 前缀字节数，用于限制签名消息总长
+ * ----------------------------------------------------------------------- */
+#define SIGN_MSG_MAX   256U
+#define SIGN_BODY_MAX  32U
+
+/* -----------------------------------------------------------------------
  * SHA-256 实现（轻量级，无外部依赖）
  * ----------------------------------------------------------------------- */
 #define SHA256_BLOCK_SIZE  64U
@@ -221,7 +229,7 @@ void net_auth_sign(const char    *method,
                    char          *out_hex)
 {
     /* 构造签名消息：method:path:timestamp */
-    char msg[256];
+    char msg[SIGN_MSG_MAX];
     int  msg_len = snprintf(msg, sizeof(msg), "%s:%s:%lu",
                             method ? method : "",
                             path   ? path   : "",
@@ -231,13 +239,25 @@ void net_auth_sign(const char    *method,
         return;
     }
 
-    /* 若有 body，追加 body 的前 32 字节（防止签名消息过长） */
-    uint8_t sign_buf[256 + 32];
+    /* snprintf 返回的是"未截断时应写的长度"，被截断时会大于缓冲区大小。
+     * 不 clamp 就把它当实际长度用，下面的 memcpy 会越界读 msg（256 字节）
+     * 并越界写 sign_buf，两者都在栈上。method+path 合计超过约 245 字节即触发。
+     * config_loader.c 的 config_save 对同一陷阱做了正确处理，此处原先漏了。
+     *
+     * 注意：截断后本端签名覆盖的消息与服务器重算的不一致，认证必然失败，
+     * 因此这既是内存安全问题也是功能问题，需要能从日志看出来。 */
+    if ((size_t)msg_len >= sizeof(msg)) {
+        msg_len = (int)sizeof(msg) - 1;
+        LOG_W(TAG, "Sign message truncated (method+path too long), auth will fail");
+    }
+
+    /* 签名消息 = msg + ':' + body 前缀，缓冲区大小据此推导，避免手写常量 */
+    uint8_t sign_buf[SIGN_MSG_MAX + 1U + SIGN_BODY_MAX];
     size_t  sign_len = (size_t)msg_len;
     memcpy(sign_buf, msg, sign_len);
     if (body != NULL && body_len > 0U) {
         sign_buf[sign_len++] = ':';
-        uint32_t body_prefix = (body_len < 32U) ? body_len : 32U;
+        uint32_t body_prefix = (body_len < SIGN_BODY_MAX) ? body_len : SIGN_BODY_MAX;
         memcpy(sign_buf + sign_len, body, body_prefix);
         sign_len += body_prefix;
     }

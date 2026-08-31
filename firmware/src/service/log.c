@@ -52,24 +52,37 @@ static uint32_t log_format(char *buf, log_level_t level,
                               (unsigned long)ts,
                               s_level_str[level],
                               tag ? tag : "");
-    if (prefix_len < 0 || prefix_len >= (int)LOG_LINE_MAX) {
+    /* 需为行尾 \r\n 预留 2 字节。若不用 +2U 判断，prefix_len 取到
+     * LOG_LINE_MAX-1 或 -2 时，下面的 LOG_LINE_MAX - prefix_len - 2U
+     * 会在 size_t 上下溢成 SIZE_MAX，使 vsnprintf 变成无界写。 */
+    if (prefix_len < 0 || (size_t)prefix_len + 2U >= LOG_LINE_MAX) {
         return 0U;
     }
 
-    int msg_len = vsnprintf(buf + prefix_len,
-                            LOG_LINE_MAX - (size_t)prefix_len - 2U,
-                            fmt, args);
+    size_t avail = LOG_LINE_MAX - (size_t)prefix_len - 2U;   /* 必 >= 1 */
+    int msg_len = vsnprintf(buf + prefix_len, avail, fmt, args);
     if (msg_len < 0) {
         return 0U;
     }
 
-    uint32_t total = (uint32_t)prefix_len + (uint32_t)msg_len;
-    if (total + 2U < LOG_LINE_MAX) {
-        buf[total]     = '\r';
-        buf[total + 1] = '\n';
-        total += 2U;
-    }
-    return total;
+    /* vsnprintf 返回的是"未截断时应写的长度"，被截断时大于 avail；
+     * 实际写入的字符数是 min(msg_len, avail - 1)。
+     *
+     * 原实现直接把 msg_len 计入总长并返回，调用方
+     * (log_write -> log_uart_send_blocking) 会按这个超出缓冲区的长度发送，
+     * 读到 buf 之后的相邻内存。对 static 的 s_line 而言，这会把相邻静态
+     * RAM 的内容泄漏到串口，且长度可由日志内容间接控制——例如
+     * net_stack.c 的 LOG_D(TAG, "Command received: %s", s_cmd_buf)，
+     * 服务器下发一条长 JSON 即可触发。 */
+    size_t written = ((size_t)msg_len < avail) ? (size_t)msg_len : (avail - 1U);
+
+    /* 此处 prefix_len + written <= LOG_LINE_MAX - 3，故 \r\n 总能放下。
+     * 原实现用 if (total + 2U < LOG_LINE_MAX) 条件写入，长日志会静默
+     * 丢掉行尾，串口输出粘成一行。 */
+    uint32_t total = (uint32_t)((size_t)prefix_len + written);
+    buf[total]     = '\r';
+    buf[total + 1] = '\n';
+    return total + 2U;
 }
 
 /* -----------------------------------------------------------------------
