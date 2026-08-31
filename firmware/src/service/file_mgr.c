@@ -37,11 +37,13 @@ typedef struct {
     uint32_t last_check_ms;
     uint64_t last_check_size;
     uint32_t slow_write_secs;
+    uint32_t write_busy_ms;   /**< 本检查周期内实际花在 f_write/f_sync 上的毫秒数 */
 } write_perf_t;
 
-#define WRITE_RATE_MIN_BPS             (4U * 1024U * 1024U)  /**< 4MB/s */
+#define WRITE_RATE_MIN_BPS             (4U * 1024U * 1024U)  /**< 4MB/s，见需求 3.4 */
 #define WRITE_RATE_CHECK_INTERVAL_MS   1000U
-#define WRITE_RATE_SLOW_THRESHOLD_SECS 5U
+/* WRITE_RATE_SLOW_THRESHOLD_SECS 由 file_mgr.h 定义（sys_manager.c 也要用），
+ * 此处不再重复定义：两处宏体一旦取值不同即变成 macro redefinition 错误 */
 
 typedef struct {
     bool     initialized;
@@ -308,6 +310,10 @@ ipcam_status_t fm_write_frame(const uint8_t *data, uint32_t size)
     hdr[2] = (uint8_t)((size >> 16U) & 0xFFU);
     hdr[3] = (uint8_t)((size >> 24U) & 0xFFU);
 
+    /* 记录进入写操作的时刻：速率按"实际花在 f_write/f_sync 上的时间"计算，
+     * 而非墙钟时间，见下方速率检查处的说明 */
+    uint32_t wr_t0 = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+
     fr = f_write(&s_fm.rec_file, hdr, sizeof(hdr), &bw);
     if (fr != FR_OK || bw != sizeof(hdr)) {
         LOG_E(TAG, "fm_write_frame: header write failed (FRESULT=%d, bw=%u)",
@@ -334,25 +340,46 @@ ipcam_status_t fm_write_frame(const uint8_t *data, uint32_t size)
         s_fm.sync_counter = 0U;
     }
 
-    /* 写入速率监控（每秒检查一次） */
+    /* 累计本帧写操作（含 f_sync）实际占用的时间 */
     uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    s_fm.perf.write_busy_ms += (now_ms - wr_t0);
+
+    /* -------------------------------------------------------------------
+     * 写入速率监控（每秒检查一次，需求 3.8）
+     *
+     * 速率 = 本周期写入字节数 / 本周期实际花在 f_write/f_sync 上的时间。
+     *
+     * 需求 3.4/3.8 的 4MB/s 约束的是 SD 介质的持续写入能力，而本机业务
+     * 负载只有约 15fps x 30KB = 450KB/s。原实现用墙钟时间做分母，算出的
+     * 是"实际需求"而非"介质能力"，450KB/s 永远小于 4MB/s，于是
+     * slow_write_secs 每秒 +1 且永不归零，sys_manager 的告警条件永久成立，
+     * 每 30 秒固定刷一条 LOG_W 并触发一次状态上报。
+     * ------------------------------------------------------------------- */
     if ((now_ms - s_fm.perf.last_check_ms) >= WRITE_RATE_CHECK_INTERVAL_MS) {
         uint64_t bytes_written = s_fm.rec_file_size - s_fm.perf.last_check_size;
-        uint32_t elapsed_ms    = now_ms - s_fm.perf.last_check_ms;
-        uint32_t rate_bps      = (uint32_t)((bytes_written * 1000U) / elapsed_ms);
+        uint32_t busy_ms       = s_fm.perf.write_busy_ms;
+        bool     slow          = false;
 
-        if (rate_bps < WRITE_RATE_MIN_BPS) {
-            s_fm.perf.slow_write_secs++;
-            LOG_W(TAG, "Write rate low: %lu KB/s (threshold %lu KB/s), slow_secs=%lu",
-                  (unsigned long)(rate_bps / 1024U),
-                  (unsigned long)(WRITE_RATE_MIN_BPS / 1024U),
-                  (unsigned long)s_fm.perf.slow_write_secs);
-        } else {
+        if (bytes_written > 0U && busy_ms > 0U) {
+            uint32_t rate_bps = (uint32_t)((bytes_written * 1000U) / busy_ms);
+            slow = (rate_bps < WRITE_RATE_MIN_BPS);
+            if (slow) {
+                s_fm.perf.slow_write_secs++;
+                LOG_W(TAG, "Write rate low: %lu KB/s (threshold %lu KB/s), slow_secs=%lu",
+                      (unsigned long)(rate_bps / 1024U),
+                      (unsigned long)(WRITE_RATE_MIN_BPS / 1024U),
+                      (unsigned long)s_fm.perf.slow_write_secs);
+            }
+        }
+        /* busy_ms 为 0 表示写入耗时不足 1 个 tick，吞吐远高于阈值，
+         * 与"本周期没有写入"一样都不算降级 */
+        if (!slow) {
             s_fm.perf.slow_write_secs = 0U;
         }
 
         s_fm.perf.last_check_ms   = now_ms;
         s_fm.perf.last_check_size = s_fm.rec_file_size;
+        s_fm.perf.write_busy_ms   = 0U;
     }
 
     xSemaphoreGive(s_fm.mutex);
