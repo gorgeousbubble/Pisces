@@ -97,7 +97,14 @@ CORS_ALLOW_ORIGINS: list = [
 # ---------------------------------------------------------------------------
 # 拍照超时
 # ---------------------------------------------------------------------------
-SNAPSHOT_TIMEOUT_S: float = float(_env("SNAPSHOT_TIMEOUT_S", "3.0"))
+# 必须覆盖 MCU 侧的完整拍照预算，否则服务器会在 MCU 还没拍完时就放弃：
+#   采集重试   IPCAM_SNAPSHOT_TIMEOUT_MS(3s) x IPCAM_SNAPSHOT_MAX_ATTEMPTS(3) = 9s
+#   + SD 卡写入
+#   + 经 115200bps 串口上传 720P JPEG（约 60KB 需 5s 以上）
+# 原默认值 3.0 比单次采集等待还短，MCU 只要发生一次重试就必然超时，
+# /api/snapshot 实际永远拿不到结果。
+# 注：上传耗时受 WIFI_UART_BAUDRATE 制约，该瓶颈解决后此值可下调。
+SNAPSHOT_TIMEOUT_S: float = float(_env("SNAPSHOT_TIMEOUT_S", "20.0"))
 
 # ---------------------------------------------------------------------------
 # 状态历史保留条数
