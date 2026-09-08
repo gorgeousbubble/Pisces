@@ -528,8 +528,11 @@ static ipcam_status_t tcp_connect_and_start_stream(void)
     int hlen = snprintf(http_header, sizeof(http_header),
         "POST /stream HTTP/1.1\r\n"
         "Host: %s:%u\r\n"
+        /* 不声明 Transfer-Encoding: chunked——后续 part 是裸 multipart 数据，
+         * 没有做 chunk 分帧。服务器的 _parse_mjpeg_stream 直接裸扫 boundary，
+         * 不解析 chunked，所以原来那行声明是与实际报文不符的假信息：
+         * 一旦中间经过任何遵循标准的代理，报文会被拒绝或解析错乱。 */
         "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
-        "Transfer-Encoding: chunked\r\n"
         "Connection: keep-alive\r\n"
         "X-Timestamp: %lu\r\n"
         "X-HMAC-SHA256: %s\r\n"
