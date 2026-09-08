@@ -25,7 +25,15 @@ from api.auth import require_auth
 from api.auth_hmac import verify_mcu_request
 
 logger = logging.getLogger("recordings_sync")
-router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
+
+# 本模块两个端点的认证方式不同，故不在 router 级别挂 require_auth：
+#   - /recordings/sync 由 MCU 调用，用 HMAC 认证（见端点内 verify_mcu_request）。
+#     原先 router 级挂了 require_auth(Basic Auth)，而固件从不发送 Authorization
+#     头，导致该端点对其唯一的预期调用方完全不可达——两套认证叠加，MCU 只能
+#     满足其中一套。
+#   - /recordings/scan 是管理操作，保留 Basic Auth。
+# 逐端点声明依赖，与 api/stream.py 的写法一致。
+router = APIRouter(prefix="/api")
 
 # 录像文件名正则：REC_YYYYMMDD_HHMMSS[_NN].mjpeg
 _REC_PATTERN = re.compile(
@@ -114,6 +122,7 @@ async def sync_recordings(
 @router.post(
     "/recordings/scan",
     summary="扫描录像目录，补录未索引文件",
+    dependencies=[Depends(require_auth)],
 )
 async def scan_recordings() -> dict:
     """
