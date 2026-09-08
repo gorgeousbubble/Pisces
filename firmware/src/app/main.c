@@ -36,12 +36,35 @@
 /* -----------------------------------------------------------------------
  * 任务栈大小（单位：StackType_t，即 4 字节）
  * ----------------------------------------------------------------------- */
-#define STACK_CAM_CAPTURE    (512U)   /* 2KB */
-#define STACK_NET_SEND       (768U)   /* 3KB */
-#define STACK_FILE_WRITE     (768U)   /* 3KB */
-#define STACK_CMD_HANDLER    (512U)   /* 2KB */
-#define STACK_SYS_MANAGER    (512U)   /* 2KB */
-#define STACK_WATCHDOG       (256U)   /* 1KB */
+/* task_cmd_handler 与 task_net_send 都会走到下面这条最深链（拍照上传/重连）：
+ *
+ *   net_send_snapshot            part_hdr[160] + send_cmd[32]        ~200B
+ *   -> net_connect
+ *   -> tcp_connect_and_start_stream
+ *                                http_header[384] + hmac_hex[65]
+ *                                + cmd[80]                          ~540B
+ *   -> net_auth_sign             msg[256] + sign_buf[289]
+ *                                + digest[32]                       ~590B
+ *   -> hmac_sha256               k_ipad[64] + k_opad[64] + tk[32]
+ *                                + sha256_ctx_t(~108)               ~268B
+ *   -> sha256_transform          uint32_t m[64] + 12 个标量          ~304B
+ *                                                        局部合计   ~1900B
+ *
+ * 再加各层栈帧的寄存器保存（约 7 层 x 32B）与 snprintf/vsnprintf 内部开销
+ * （newlib 的格式化例程可用掉数百字节），实际需求明显超过 2KB。
+ * 原 STACK_CMD_HANDLER 恰为 512 字 = 2048B，必然溢出；
+ * configCHECK_FOR_STACK_OVERFLOW=2 会命中钩子并软复位，表现为莫名重启。
+ * 故 CMD 由 512 提到 1024，NET 由 768 提到 1024（走同一条链）。
+ *
+ * 堆预算：全部任务栈合计 4096 字 = 16KB，加软件定时器任务 1KB 与各 TCB，
+ * 相对 configTOTAL_HEAP_SIZE(64KB) 仍有充裕余量。
+ */
+#define STACK_CAM_CAPTURE    (512U)   /* 2KB，轮询采集无大局部变量 */
+#define STACK_NET_SEND       (1024U)  /* 4KB，见上方最深链说明 */
+#define STACK_FILE_WRITE     (768U)   /* 3KB，f_open 在 FF_USE_LFN=2 下占调用栈约 600B */
+#define STACK_CMD_HANDLER    (1024U)  /* 4KB，见上方最深链说明 */
+#define STACK_SYS_MANAGER    (512U)   /* 2KB，仅状态汇总与 net_tick */
+#define STACK_WATCHDOG       (256U)   /* 1KB，仅心跳检查与喂狗 */
 
 /* -----------------------------------------------------------------------
  * 任务优先级
