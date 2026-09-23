@@ -10,6 +10,18 @@
 
 #include "MK64F12.h"
 
+/* 本头文件的宏体直接使用了 KSDK 驱动层的枚举与内联函数，必须自带这些依赖：
+ *   fsl_clock.h  —  kCLOCK_CoreSysClk / kCLOCK_BusClk（*_CLKSRC 宏）
+ *   fsl_port.h   —  kPORT_MuxAlt2/3/4（*_MUX 宏）
+ *   fsl_gpio.h   —  GPIO_PinWrite / GPIO_PortToggle（LED_* 操作宏）
+ *
+ * 原先只 include 了 MK64F12.h，能编译通过纯属巧合——所有使用点恰好都自行
+ * include 了对应的 fsl 头（例如 main.c 靠 fsl_gpio.h 才让 LED_ERROR_ON()
+ * 可用）。任何只 include board.h 就使用这些宏的新文件都会编译失败。 */
+#include "fsl_clock.h"
+#include "fsl_port.h"
+#include "fsl_gpio.h"
+
 /* -----------------------------------------------------------------------
  * 系统时钟
  * ----------------------------------------------------------------------- */
