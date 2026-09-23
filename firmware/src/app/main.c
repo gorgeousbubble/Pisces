@@ -90,6 +90,9 @@
  * ----------------------------------------------------------------------- */
 #define CAM_FAIL_BACKOFF_MS  (20U)
 
+/* 摄像头启动失败后的重试间隔（ms），见 task_cam_capture 的降级循环 */
+#define CAM_START_RETRY_MS   (5000U)
+
 /* -----------------------------------------------------------------------
  * 编码帧队列（cam_capture -> net_send / file_write 共享）
  * ----------------------------------------------------------------------- */
@@ -137,11 +140,37 @@ static void task_cam_capture(void *param)
     (void)param;
     LOG_I(TAG, "task_cam_capture started");
 
-    ipcam_status_t ret = cam_start_capture();
-    if (ret != IPCAM_OK) {
-        LOG_E(TAG, "cam_start_capture failed: %d", (int)ret);
-        vTaskDelete(NULL);
-        return;
+    /* 先注册本任务心跳，再做可能失败的启动。
+     *
+     * 原实现在 cam_start_capture() 失败时直接 vTaskDelete(NULL)，而此前从未
+     * 调用过 sys_heartbeat_update(HEARTBEAT_CAM_CAPTURE)，s_heartbeat_ts[CAM]
+     * 因此永远停在 0。sys_watchdog_task 与 sys_manager_task 都把 last_ts==0
+     * 当作"尚未上报，视为正常"，于是任务已经死了却永远检测不到，也不告警。 */
+    sys_heartbeat_update(HEARTBEAT_CAM_CAPTURE);
+
+    /* 启动失败不再删除任务：删除会让上述心跳永久停在 0 而无法告警，
+     * 单纯留在原地空转又会被误判死亡触发复位。改为降级循环——持续喂心跳、
+     * 周期性重跑初始化、并请求上报状态，让服务端经 cam_available 感知故障。
+     * 与 main 中"摄像头失败仍继续启动，允许远程诊断"的设计意图一致。 */
+    while (cam_start_capture() != IPCAM_OK) {
+        LOG_E(TAG, "Camera unavailable, retrying init in %ums", CAM_START_RETRY_MS);
+        net_request_status_report();
+
+        uint32_t waited = 0U;
+        while (waited < CAM_START_RETRY_MS) {
+            sys_heartbeat_update(HEARTBEAT_CAM_CAPTURE);
+            vTaskDelay(pdMS_TO_TICKS(500U));
+            waited += 500U;
+        }
+
+        /* cam_start_capture 仅在 cam_init 未成功时返回失败，
+         * 因此重试必须重跑完整初始化，只重调 start 不会有任何改变 */
+        cam_config_t retry_cfg = {
+            .resolution   = CAM_RES_VGA,
+            .jpeg_quality = g_ipcam_config.jpeg_quality,
+            .target_fps   = g_ipcam_config.target_fps,
+        };
+        (void)cam_init(&retry_cfg);
     }
 
     uint32_t consecutive_timeout = 0U;

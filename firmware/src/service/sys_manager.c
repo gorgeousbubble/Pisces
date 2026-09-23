@@ -249,7 +249,10 @@ void sys_get_status(sys_status_t *status)
     status->fps_current  = cam_get_fps();
     status->drop_count   = sys_drop_counter_get();
     status->uptime_sec   = sys_get_uptime_sec();
-    status->cam_available = true;  /* 由 cam_driver 维护，此处简化 */
+    /* 原先此处硬编码 true（注释写"由 cam_driver 维护，此处简化"），
+     * 导致摄像头初始化失败或采集停止时，上报给服务器的 cam 仍恒为 true，
+     * 服务端完全无从得知摄像头故障。改为向驱动查询真实状态。 */
+    status->cam_available = cam_is_available();
     status->sd_available  = fm_is_sd_available();
 
     uint32_t free_mb = 0U;

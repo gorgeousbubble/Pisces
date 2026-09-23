@@ -130,6 +130,13 @@ uint32_t cam_get_drop_count(void);
 uint8_t cam_get_fps(void);
 
 /**
+ * @brief 摄像头是否已初始化且处于采集态
+ *
+ * 供 sys_get_status 上报 cam_available，使服务端能感知摄像头故障。
+ */
+bool cam_is_available(void);
+
+/**
  * @brief 帧采集任务体（在 task_cam_capture 主循环中调用）
  *
  * 执行一次完整的帧采集（软件轮询 DVP 信号），

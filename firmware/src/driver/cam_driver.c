@@ -700,3 +700,16 @@ void cam_set_fps(uint8_t fps)
  * ----------------------------------------------------------------------- */
 uint32_t cam_get_drop_count(void) { return s_cam.drop_count; }
 uint8_t  cam_get_fps(void)        { return s_cam.fps_current; }
+
+/* -----------------------------------------------------------------------
+ * cam_is_available
+ * 摄像头是否已初始化且处于采集态。
+ *
+ * sys_get_status 原先把 cam_available 硬编码为 true（注释写"由 cam_driver
+ * 维护，此处简化"），于是无论摄像头是否真的可用，上报给服务器的状态里
+ * cam 恒为 true——摄像头初始化失败或采集停止时服务端完全无从得知。
+ * ----------------------------------------------------------------------- */
+bool cam_is_available(void)
+{
+    return s_cam.initialized && s_cam.capturing;
+}
