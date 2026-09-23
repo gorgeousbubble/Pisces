@@ -208,11 +208,20 @@ void net_auth_init(const char *key)
 {
     if (key != NULL && strlen(key) > 0U) {
         strncpy(s_key, key, NET_AUTH_KEY_MAX_LEN);
-        s_key[NET_AUTH_KEY_MAX_LEN] = '\0';
     } else {
         strncpy(s_key, NET_AUTH_DEFAULT_KEY, NET_AUTH_KEY_MAX_LEN);
-        s_key[NET_AUTH_KEY_MAX_LEN] = '\0';
-        LOG_W(TAG, "Using default HMAC key — change in config.ini [auth] key=...");
+    }
+    s_key[NET_AUTH_KEY_MAX_LEN] = '\0';
+
+    /* 按"最终生效的密钥内容"判断是否仍为默认值，而不是靠"入参是否为 NULL"推断。
+     *
+     * config_load 一进来就调 config_reset_to_default()，其中无条件把
+     * IPCAM_DEFAULT_AUTH_KEY 填进 g_ipcam_config.auth_key，因此 main 里的
+     * auth_key[0] != '\0' 恒成立、永远走非 NULL 分支。原实现把告警挂在 else
+     * 分支上，导致"仍在使用默认密钥"这条警告永远打不出来——用户拿编译期
+     * 默认密钥跑生产环境也看不到任何提示。 */
+    if (strcmp(s_key, NET_AUTH_DEFAULT_KEY) == 0) {
+        LOG_W(TAG, "Using DEFAULT HMAC key — set [auth] key= in config.ini before production");
     }
     LOG_I(TAG, "HMAC-SHA256 auth initialized");
 }

@@ -17,6 +17,7 @@
  */
 
 #include "ipcam_types.h"
+#include "ipcam_config.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -25,9 +26,14 @@
 /* Hex 字符串长度（32字节 * 2 + 终止符） */
 #define HMAC_HEX_LEN      65U
 
-/* 默认共享密钥（生产环境必须在 config.ini 中覆盖） */
-#define NET_AUTH_DEFAULT_KEY  "pisces-ipcam-default-key-change-me"
-#define NET_AUTH_KEY_MAX_LEN  64U
+/* 默认共享密钥与长度上限统一取自 ipcam_config.h，不再独立定义一份。
+ *
+ * 原先此处写死了与 IPCAM_DEFAULT_AUTH_KEY / IPCAM_AUTH_KEY_MAX_LEN 取值相同
+ * 的另一套常量，必须手工保持同步：config_loader 用 IPCAM_* 填充
+ * g_ipcam_config.auth_key，本模块却用 NET_AUTH_* 做比对，一旦任一处被改动
+ * 就会静默不一致，"是否仍在使用默认密钥"的判断随之失效。 */
+#define NET_AUTH_DEFAULT_KEY  IPCAM_DEFAULT_AUTH_KEY
+#define NET_AUTH_KEY_MAX_LEN  IPCAM_AUTH_KEY_MAX_LEN
 
 /* -----------------------------------------------------------------------
  * 函数声明
