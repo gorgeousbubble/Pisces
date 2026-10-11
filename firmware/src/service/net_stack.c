@@ -149,6 +149,71 @@ void net_clear_status_report(void)
 }
 
 /* -----------------------------------------------------------------------
+ * AT 通道互斥
+ *
+ * WIFI_UART 与接收环形缓冲 s_rx_buf 是单一共享资源：AT 命令的"发送 -> 等待
+ * 响应"必须整体原子，否则两个任务会互相踩踏。
+ *
+ * 原实现只在 net_send_frame / net_send_snapshot / net_send_status 内部持锁，
+ * 而 net_connect（含 wifi_connect / tcp_connect_and_start_stream）、
+ * net_reinit_at、net_reset_wifi_module 全程不持任何锁。于是：
+ *   - task_cmd_handler 拍照时经 net_send_snapshot 调 net_connect，
+ *     可与正在 net_send_frame 中等待响应的 task_net_send 同时向同一个 UART
+ *     写 AT+CWJAP / AT+CIPSEND；
+ *   - 两者又都从同一个 s_rx_buf 竞争消费响应（uart_rx_read_byte 会把字节取走），
+ *     还各自调 uart_rx_flush() 把对方正在等的响应清掉。
+ * AT 状态机必然错乱。
+ *
+ * 因 configUSE_RECURSIVE_MUTEXES=0，此处不做嵌套加锁：每个 AT 事务各自
+ * 取放一次。net_send_snapshot 是先调用 net_connect()（内部自行取放）再取锁
+ * 发送，两段各自原子，不构成嵌套。
+ * ----------------------------------------------------------------------- */
+
+/* 连接类操作可能占用通道数十秒（WiFi/TCP 重试），故等待上限取得较宽 */
+#define AT_LOCK_TIMEOUT_MS   30000U
+
+/**
+ * 获取 AT 通道。
+ *
+ * 分段等待：持锁方可能占用数十秒，而等待方阻塞在 xSemaphoreTake 期间无法
+ * 刷新自己的心跳，一旦超过 HEARTBEAT_TIMEOUT_MS(3s) 就会被 sys_manager
+ * 判定死亡并触发软复位。因此每段之间调用 sys_heartbeat_kick()。
+ *
+ * @return true 已获得通道；false 在 total_ms 内未获得（调用方应返回 BUSY）
+ */
+static bool at_lock(uint32_t total_ms)
+{
+    if (s_net.tx_mutex == NULL) {
+        return false;
+    }
+
+    /* 调度器未启动（net_init 阶段）：单线程且锁必然空闲，直接非阻塞获取，
+     * 避免在无任务上下文中走带超时的阻塞路径 */
+    if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) {
+        return xSemaphoreTake(s_net.tx_mutex, 0U) == pdTRUE;
+    }
+
+    uint32_t waited = 0U;
+    while (waited < total_ms) {
+        uint32_t step = (total_ms - waited) < CONN_HEARTBEAT_FEED_MS
+                        ? (total_ms - waited) : CONN_HEARTBEAT_FEED_MS;
+        if (xSemaphoreTake(s_net.tx_mutex, pdMS_TO_TICKS(step)) == pdTRUE) {
+            return true;
+        }
+        sys_heartbeat_kick();
+        waited += step;
+    }
+    return false;
+}
+
+static void at_unlock(void)
+{
+    if (s_net.tx_mutex != NULL) {
+        (void)xSemaphoreGive(s_net.tx_mutex);
+    }
+}
+
+/* -----------------------------------------------------------------------
  * UART4 接收中断处理（将数据写入环形缓冲区）
  * 修复：原为 UART1_RX_TX_IRQHandler，已改用 UART4 避免 PTC3/PTC4 冲突
  * ----------------------------------------------------------------------- */
@@ -359,6 +424,12 @@ static ipcam_status_t at_cipsend(const uint8_t *data, uint32_t size)
  * ----------------------------------------------------------------------- */
 void net_reinit_at(void)
 {
+    /* 整段 AT 事务需独占通道，否则与并发的 net_send_* 互相踩踏（见 at_lock 说明）*/
+    if (!at_lock(AT_LOCK_TIMEOUT_MS)) {
+        LOG_W(TAG, "net_reinit_at: AT channel busy, skipped");
+        return;
+    }
+
     uart_rx_flush();
     at_send("ATE0\r\n");
     at_wait_response("OK", AT_RESP_TIMEOUT_MS, NULL, 0U);
@@ -368,6 +439,8 @@ void net_reinit_at(void)
     s_net.wifi_retry_count   = 0U;
     s_net.tcp_retry_count    = 0U;
     LOG_I(TAG, "AT re-initialized after module reset");
+
+    at_unlock();
 }
 
 /* -----------------------------------------------------------------------
@@ -559,10 +632,9 @@ static ipcam_status_t tcp_connect_and_start_stream(void)
 /* -----------------------------------------------------------------------
  * net_connect
  * ----------------------------------------------------------------------- */
-ipcam_status_t net_connect(void)
+/* 实际的连接流程；调用方必须已持有 AT 通道（见下方 net_connect 包装） */
+static ipcam_status_t net_connect_locked(void)
 {
-    if (!s_net.initialized) return IPCAM_ERR_NOT_INIT;
-
     /* WiFi 连接（带重试） */
     for (uint32_t i = 0U; i < IPCAM_WIFI_RETRY_MAX; i++) {
         if (wifi_connect() == IPCAM_OK) break;
@@ -604,6 +676,29 @@ ipcam_status_t net_connect(void)
 }
 
 /* -----------------------------------------------------------------------
+ * net_connect
+ * 独占 AT 通道后执行连接流程。
+ *
+ * 加锁放在这一层而非 net_connect_locked 内部，是为了让整个
+ * "WiFi 连接 + TCP 连接 + 发送 HTTP 推流头" 序列成为一个原子事务——
+ * 中途被另一个任务插入 AT 命令会直接破坏 ESP8266 的状态机。
+ * ----------------------------------------------------------------------- */
+ipcam_status_t net_connect(void)
+{
+    if (!s_net.initialized) return IPCAM_ERR_NOT_INIT;
+
+    if (!at_lock(AT_LOCK_TIMEOUT_MS)) {
+        LOG_W(TAG, "net_connect: AT channel busy, giving up");
+        return IPCAM_ERR_BUSY;
+    }
+
+    ipcam_status_t ret = net_connect_locked();
+
+    at_unlock();
+    return ret;
+}
+
+/* -----------------------------------------------------------------------
  * net_send_frame
  * 发送一帧 MJPEG multipart 数据
  * 格式：
@@ -619,7 +714,7 @@ ipcam_status_t net_send_frame(const uint8_t *jpeg, uint32_t size)
     if (s_net.state != NET_STATE_STREAMING) return IPCAM_ERR_IO;
     if (jpeg == NULL || size == 0U)   return IPCAM_ERR_INVALID;
 
-    if (xSemaphoreTake(s_net.tx_mutex, pdMS_TO_TICKS(100U)) != pdTRUE) {
+    if (!at_lock(100U)) {
         return IPCAM_ERR_BUSY;
     }
 
@@ -660,7 +755,7 @@ ipcam_status_t net_send_frame(const uint8_t *jpeg, uint32_t size)
     }
 
 done:
-    xSemaphoreGive(s_net.tx_mutex);
+    at_unlock();
 
     if (ret != IPCAM_OK) {
         /* 发送失败，标记 TCP 断开，触发重连 */
@@ -702,7 +797,7 @@ ipcam_status_t net_send_snapshot(const uint8_t *jpeg, uint32_t size, bool sd_fai
         }
     }
 
-    if (xSemaphoreTake(s_net.tx_mutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
+    if (!at_lock(500U)) {
         return IPCAM_ERR_BUSY;
     }
 
@@ -741,7 +836,7 @@ ipcam_status_t net_send_snapshot(const uint8_t *jpeg, uint32_t size, bool sd_fai
     }
 
 snap_done:
-    xSemaphoreGive(s_net.tx_mutex);
+    at_unlock();
     if (ret == IPCAM_OK) {
         LOG_I(TAG, "Snapshot uploaded (%lu bytes, sd_failed=%d)",
               (unsigned long)size, (int)sd_failed);
@@ -786,7 +881,7 @@ ipcam_status_t net_send_status(const sys_status_t *status)
 
     if (jlen <= 0) return IPCAM_ERR;
 
-    if (xSemaphoreTake(s_net.tx_mutex, pdMS_TO_TICKS(200U)) != pdTRUE) {
+    if (!at_lock(200U)) {
         return IPCAM_ERR_BUSY;
     }
 
@@ -821,7 +916,7 @@ ipcam_status_t net_send_status(const sys_status_t *status)
         }
     }
 
-    xSemaphoreGive(s_net.tx_mutex);
+    at_unlock();
     return ret;
 }
 
@@ -926,12 +1021,21 @@ ipcam_status_t net_recv_cmd(ipcam_cmd_t *cmd)
  * ----------------------------------------------------------------------- */
 void net_reset_wifi_module(void)
 {
+    /* 硬件复位会让模块丢弃所有在途 AT 会话，必须独占通道，
+     * 否则会把另一个任务正在进行的 AT 事务打断在中途 */
+    if (!at_lock(AT_LOCK_TIMEOUT_MS)) {
+        LOG_W(TAG, "net_reset_wifi_module: AT channel busy, skipped");
+        return;
+    }
+
     /* 用 BOARD_DelayMs：本函数经 net_init 在调度器启动前也会被调用 */
     LOG_I(TAG, "WiFi module hardware reset");
     GPIO_PinWrite(WIFI_RST_GPIO, WIFI_RST_PIN, 0U);  /* 拉低 RST */
     BOARD_DelayMs(100U);                              /* 保持 100ms */
     GPIO_PinWrite(WIFI_RST_GPIO, WIFI_RST_PIN, 1U);  /* 释放 RST */
     BOARD_DelayMs(500U);                              /* 等待模块启动 */
+
+    at_unlock();
 }
 
 /* -----------------------------------------------------------------------
