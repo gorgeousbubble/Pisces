@@ -510,7 +510,9 @@
         </option>
         <option>
           <name>AUserIncludes</name>
-          <state></state>
+          <state>$PROJ_DIR$\..\..\include</state>
+          <state>$PROJ_DIR$\..\..\third_party\FreeRTOS\include</state>
+          <state>$PROJ_DIR$\..\..\third_party\FreeRTOS\portable\IAR\ARM_CM4F</state>
         </option>
         <option>
           <name>AExtraOptionsCheckV2</name>
